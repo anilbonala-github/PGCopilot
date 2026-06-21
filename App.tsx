@@ -762,7 +762,7 @@ const styles = StyleSheet.create({
   loginScreen: { flex: 1, backgroundColor: colors.bg, justifyContent: 'space-between', padding: 22 },
   loginTop: { flex: 1, paddingTop: 62, alignItems: 'center' },
   logoImage: { width: 260, height: 208 },
-  loginCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 19, padding: 19, marginBottom: 22, width: '100%', maxWidth: 480, alignSelf: 'center' },
+  loginCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 19, padding: 19, marginBottom: 58, width: '100%', maxWidth: 480, alignSelf: 'center' },
   loginTitle: { color: colors.ink, fontSize: 21, fontWeight: '800' },
   loginCaption: { color: colors.muted, fontSize: 13, marginTop: 5, marginBottom: 21 },
   loginFieldLabel: { color: colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 0.8, marginBottom: 7 },
