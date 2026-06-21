@@ -48,7 +48,7 @@ const colors = {
 const money = (value: number) =>
   `₹${value.toLocaleString('en-IN')}`;
 
-const pgcopilotLogo = require('./assets/login-logo.png');
+const pgcopilotLogo = require('./assets/login-mark.png');
 
 function AppIcon({ name, size = 20, color = colors.green }: { name: IconName; size?: number; color?: string }) {
   return <MaterialCommunityIcons name={name} size={size} color={color} />;
@@ -533,6 +533,11 @@ function Login({ onLogin }: { onLogin: () => void }) {
     <SafeAreaView style={styles.loginScreen}>
       <View style={styles.loginTop}>
         <Image source={pgcopilotLogo} style={styles.logoImage} resizeMode="contain" />
+        <Text style={styles.logoText}>
+          <Text style={styles.logoTextBlue}>PG</Text>
+          <Text style={styles.logoTextGreen}>Copilot</Text>
+        </Text>
+        <Text style={styles.loginTagline}>Where Tenants Find and Owners Thrive</Text>
       </View>
       <View style={styles.loginCard}>
         <Text style={styles.loginTitle}>Welcome back</Text>
@@ -760,8 +765,12 @@ const styles = StyleSheet.create({
   navText: { color: colors.muted, fontSize: 9.5, fontWeight: '700' },
   navTextActive: { color: colors.green },
   loginScreen: { flex: 1, backgroundColor: colors.bg, justifyContent: 'space-between', padding: 22 },
-  loginTop: { flex: 1, paddingTop: 62, alignItems: 'center' },
-  logoImage: { width: 300, height: 225 },
+  loginTop: { flex: 1, paddingTop: 54, alignItems: 'center' },
+  logoImage: { width: 260, height: 188 },
+  logoText: { fontSize: 32, fontWeight: '900', letterSpacing: -1.2, marginTop: -6 },
+  logoTextBlue: { color: '#073060' },
+  logoTextGreen: { color: '#69BE45' },
+  loginTagline: { color: '#073060', fontSize: 12, fontWeight: '800', marginTop: 1 },
   loginCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 19, padding: 19, marginBottom: 58, width: '100%', maxWidth: 480, alignSelf: 'center' },
   loginTitle: { color: colors.ink, fontSize: 21, fontWeight: '800' },
   loginCaption: { color: colors.muted, fontSize: 13, marginTop: 5, marginBottom: 21 },
