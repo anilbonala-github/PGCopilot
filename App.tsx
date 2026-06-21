@@ -48,7 +48,7 @@ const colors = {
 const money = (value: number) =>
   `₹${value.toLocaleString('en-IN')}`;
 
-const pgcopilotLogo = require('./assets/icon.png');
+const pgcopilotLogo = require('./assets/login-logo.png');
 
 function AppIcon({ name, size = 20, color = colors.green }: { name: IconName; size?: number; color?: string }) {
   return <MaterialCommunityIcons name={name} size={size} color={color} />;
@@ -533,8 +533,6 @@ function Login({ onLogin }: { onLogin: () => void }) {
     <SafeAreaView style={styles.loginScreen}>
       <View style={styles.loginTop}>
         <Image source={pgcopilotLogo} style={styles.logoImage} resizeMode="contain" />
-        <Text style={styles.logoText}>PGCopilot</Text>
-        <Text style={styles.loginTagline}>Run your PG with confidence.</Text>
       </View>
       <View style={styles.loginCard}>
         <Text style={styles.loginTitle}>Welcome back</Text>
@@ -762,10 +760,8 @@ const styles = StyleSheet.create({
   navText: { color: colors.muted, fontSize: 9.5, fontWeight: '700' },
   navTextActive: { color: colors.green },
   loginScreen: { flex: 1, backgroundColor: colors.bg, justifyContent: 'space-between', padding: 22 },
-  loginTop: { flex: 1, paddingTop: 65, alignItems: 'center' },
-  logoImage: { width: 148, height: 148, marginBottom: 4 },
-  logoText: { fontSize: 29, fontWeight: '900', letterSpacing: -1, color: colors.ink },
-  loginTagline: { color: colors.muted, fontSize: 14, marginTop: 8 },
+  loginTop: { flex: 1, paddingTop: 62, alignItems: 'center' },
+  logoImage: { width: 260, height: 208 },
   loginCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 19, padding: 19, marginBottom: 22, width: '100%', maxWidth: 480, alignSelf: 'center' },
   loginTitle: { color: colors.ink, fontSize: 21, fontWeight: '800' },
   loginCaption: { color: colors.muted, fontSize: 13, marginTop: 5, marginBottom: 21 },
