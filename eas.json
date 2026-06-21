@@ -1,0 +1,36 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "local"
+  },
+  "build": {
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "simulator": false,
+        "image": "macos-sequoia-15.6-xcode-26.0"
+      },
+      "distribution": "store"
+    },
+    "android-preview": {
+      "android": {
+        "buildType": "apk"
+      },
+      "distribution": "internal"
+    },
+    "ios-device": {
+      "ios": {
+        "simulator": false
+      },
+      "distribution": "internal"
+    },
+    "ios-simulator": {
+      "ios": {
+        "simulator": true
+      },
+      "distribution": "internal"
+    }
+  }
+}

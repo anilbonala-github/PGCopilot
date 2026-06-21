@@ -1,0 +1,33 @@
+{
+  "name": "pgcopilot",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@expo/metro-runtime": "~3.2.3",
+    "@expo/vector-icons": "14.0.4",
+    "@supabase/supabase-js": "^2.45.4",
+    "expo": "~51.0.39",
+    "expo-build-properties": "~0.12.5",
+    "expo-font": "~12.0.10",
+    "expo-status-bar": "~1.12.1",
+    "patch-package": "^8.0.1",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-native": "0.74.5",
+    "react-native-web": "~0.19.13"
+  },
+  "devDependencies": {
+    "@types/react": "~18.2.79",
+    "typescript": "~5.3.3"
+  },
+  "scripts": {
+    "postinstall": "patch-package",
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "ios:device": "npx eas-cli build --platform ios --profile ios-device",
+    "ios:simulator": "npx eas-cli build --platform ios --profile ios-simulator",
+    "web": "expo start --web"
+  },
+  "private": true
+}
