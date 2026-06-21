@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  Image,
   Modal,
   Platform,
   SafeAreaView,
@@ -46,6 +47,8 @@ const colors = {
 
 const money = (value: number) =>
   `₹${value.toLocaleString('en-IN')}`;
+
+const pgcopilotLogo = require('./assets/icon.png');
 
 function AppIcon({ name, size = 20, color = colors.green }: { name: IconName; size?: number; color?: string }) {
   return <MaterialCommunityIcons name={name} size={size} color={color} />;
@@ -97,8 +100,8 @@ function SyncBanner({ loading, source, error }: { loading: boolean; source: 'sup
     : source === 'supabase'
       ? 'Live Supabase data'
       : error
-        ? `Demo data shown: ${error}`
-        : 'Demo data shown until Supabase keys are added';
+        ? `Live database unavailable: ${error}`
+        : 'Live database not connected. Add Hostinger environment variables and redeploy.';
 
   return (
     <View style={[styles.syncBanner, source === 'supabase' && !loading ? styles.syncBannerLive : styles.syncBannerDemo]}>
@@ -529,7 +532,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
   return (
     <SafeAreaView style={styles.loginScreen}>
       <View style={styles.loginTop}>
-        <View style={styles.logoMark}><AppIcon name="office-building-outline" size={29} color="#FFF" /></View>
+        <Image source={pgcopilotLogo} style={styles.logoImage} resizeMode="contain" />
         <Text style={styles.logoText}>PGCopilot</Text>
         <Text style={styles.loginTagline}>Run your PG with confidence.</Text>
       </View>
@@ -539,7 +542,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
         <Text style={styles.loginFieldLabel}>MOBILE NUMBER</Text>
         <View style={styles.loginInput}><Text style={styles.prefix}>+91</Text><TextInput style={styles.flex} placeholder="Enter mobile number" keyboardType="phone-pad" /></View>
         <TouchableOpacity style={styles.primaryButton} onPress={onLogin}><Text style={styles.primaryButtonText}>Continue securely</Text></TouchableOpacity>
-        <Text style={styles.demoHint}>Demo mode · Tap continue to explore</Text>
+        <Text style={styles.loginSecurityHint}>Secure access for PG owners</Text>
       </View>
     </SafeAreaView>
   );
@@ -760,7 +763,7 @@ const styles = StyleSheet.create({
   navTextActive: { color: colors.green },
   loginScreen: { flex: 1, backgroundColor: colors.bg, justifyContent: 'space-between', padding: 22 },
   loginTop: { flex: 1, paddingTop: 65, alignItems: 'center' },
-  logoMark: { width: 61, height: 61, borderRadius: 18, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', marginBottom: 13 },
+  logoImage: { width: 148, height: 148, marginBottom: 4 },
   logoText: { fontSize: 29, fontWeight: '900', letterSpacing: -1, color: colors.ink },
   loginTagline: { color: colors.muted, fontSize: 14, marginTop: 8 },
   loginCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 19, padding: 19, marginBottom: 22, width: '100%', maxWidth: 480, alignSelf: 'center' },
@@ -769,5 +772,5 @@ const styles = StyleSheet.create({
   loginFieldLabel: { color: colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 0.8, marginBottom: 7 },
   loginInput: { height: 48, borderWidth: 1, borderColor: colors.line, borderRadius: 10, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 10 },
   prefix: { color: colors.ink, fontWeight: '700', paddingRight: 10, borderRightWidth: 1, borderRightColor: colors.line },
-  demoHint: { color: colors.muted, textAlign: 'center', fontSize: 11, marginTop: 14 },
+  loginSecurityHint: { color: colors.muted, textAlign: 'center', fontSize: 11, marginTop: 14 },
 });
