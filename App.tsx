@@ -703,7 +703,7 @@ function BottomNav({ active, onPress }: { active: Tab; onPress: (tab: Tab) => vo
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
-  const [demoMode, setDemoMode] = useState(!isSupabaseConfigured);
+  const [demoMode, setDemoMode] = useState(false);
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState<string | undefined>();
