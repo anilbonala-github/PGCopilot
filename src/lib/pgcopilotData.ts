@@ -131,7 +131,7 @@ export function buildSummary(data: PgMasterData) {
     pendingRent,
     activeTenants: data.tenants.length,
     newAdmissions: Math.min(6, data.tenants.length),
-    upcomingVacates: 4,
+    upcomingVacates: 0,
     income: Math.max(expectedRent, collectedRent),
     expensesTotal,
     profit: Math.max(expectedRent, collectedRent) - expensesTotal,
