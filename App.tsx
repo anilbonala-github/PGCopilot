@@ -14,11 +14,17 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import type { Session } from '@supabase/supabase-js';
+import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import {
+  acceptStaffInvites,
   buildSummary,
+  createOwnerHostel,
   createTenant as saveTenant,
   fallbackData,
+  inviteStaff,
   loadPgMasterData,
+  type HostelSetupInput,
   type NewTenantInput,
   type PgMasterData,
 } from './src/lib/pgcopilotData';
@@ -429,11 +435,30 @@ function Rent({ data }: { data: PgMasterData }) {
   );
 }
 
-function More({ data }: { data: PgMasterData }) {
+function More({ data, onInviteStaff, onLogout }: { data: PgMasterData; onInviteStaff: (phone: string) => Promise<void>; onLogout: () => Promise<void> }) {
   const [view, setView] = useState<'menu' | 'expenses' | 'reports'>('menu');
+  const [staffPhone, setStaffPhone] = useState('');
+  const [inviteMessage, setInviteMessage] = useState<string | undefined>();
+  const [inviting, setInviting] = useState(false);
   const summary = buildSummary(data);
   if (view === 'expenses') return <Expenses data={data} onBack={() => setView('menu')} />;
   if (view === 'reports') return <Reports data={data} onBack={() => setView('menu')} />;
+
+  const handleInvite = async () => {
+    if (!staffPhone.trim()) return;
+    setInviting(true);
+    setInviteMessage(undefined);
+    try {
+      await onInviteStaff(staffPhone.trim());
+      setStaffPhone('');
+      setInviteMessage('Staff invite saved. Ask them to login with OTP using this mobile number.');
+    } catch (error) {
+      setInviteMessage(error instanceof Error ? error.message : 'Unable to invite staff.');
+    } finally {
+      setInviting(false);
+    }
+  };
+
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
       <Header title="More" subtitle="Manage your property" />
@@ -454,6 +479,18 @@ function More({ data }: { data: PgMasterData }) {
         <MenuRow icon="message-text-outline" label="Reminder templates" caption="WhatsApp and SMS rent reminders" tone="blue" />
         <MenuRow icon="account-group-outline" label="Staff access" caption="Manage wardens and accountants" tone="purple" last />
       </View>
+      {data.currentUserRole === 'Owner' && data.hostelId ? (
+        <>
+          <SectionTitle title="Invite staff" />
+          <View style={styles.inviteCard}>
+            <Text style={styles.loginCaption}>Staff can add tenants and payments but cannot delete hostel data.</Text>
+            <View style={styles.loginInput}><Text style={styles.prefix}>+91</Text><TextInput style={styles.flex} placeholder="Staff mobile number" keyboardType="phone-pad" value={staffPhone} onChangeText={setStaffPhone} /></View>
+            {inviteMessage ? <Text style={styles.inviteMessage}>{inviteMessage}</Text> : null}
+            <TouchableOpacity style={styles.primaryButton} onPress={handleInvite} disabled={inviting}><Text style={styles.primaryButtonText}>{inviting ? 'Inviting...' : 'Invite staff'}</Text></TouchableOpacity>
+          </View>
+        </>
+      ) : null}
+      <TouchableOpacity style={styles.logoutButton} onPress={onLogout}><Text style={styles.logoutText}>Logout</Text></TouchableOpacity>
     </ScrollView>
   );
 }
@@ -528,7 +565,46 @@ function Reports({ data, onBack }: { data: PgMasterData; onBack: () => void }) {
   );
 }
 
-function Login({ onLogin }: { onLogin: () => void }) {
+function normaliseIndianPhone(value: string) {
+  const digits = value.replace(/\D/g, '');
+  if (digits.length === 10) return `+91${digits}`;
+  if (digits.startsWith('91')) return `+${digits}`;
+  return value.trim();
+}
+
+function Login({
+  authEnabled,
+  onDemoLogin,
+  onSendOtp,
+  onVerifyOtp,
+  loading,
+  error,
+}: {
+  authEnabled: boolean;
+  onDemoLogin: () => void;
+  onSendOtp: (phone: string) => Promise<void>;
+  onVerifyOtp: (phone: string, code: string) => Promise<void>;
+  loading: boolean;
+  error?: string;
+}) {
+  const [phone, setPhone] = useState('');
+  const [otp, setOtp] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+
+  const handleAuthPress = async () => {
+    if (!authEnabled) {
+      onDemoLogin();
+      return;
+    }
+    const formattedPhone = normaliseIndianPhone(phone);
+    if (!otpSent) {
+      await onSendOtp(formattedPhone);
+      setOtpSent(true);
+      return;
+    }
+    await onVerifyOtp(formattedPhone, otp.trim());
+  };
+
   return (
     <SafeAreaView style={styles.loginScreen}>
       <View style={styles.loginTop}>
@@ -541,11 +617,65 @@ function Login({ onLogin }: { onLogin: () => void }) {
       </View>
       <View style={styles.loginCard}>
         <Text style={styles.loginTitle}>Welcome back</Text>
-        <Text style={styles.loginCaption}>Sign in to manage your property</Text>
+        <Text style={styles.loginCaption}>{authEnabled ? 'Sign in with mobile OTP' : 'Demo mode because Supabase keys are missing'}</Text>
         <Text style={styles.loginFieldLabel}>MOBILE NUMBER</Text>
-        <View style={styles.loginInput}><Text style={styles.prefix}>+91</Text><TextInput style={styles.flex} placeholder="Enter mobile number" keyboardType="phone-pad" /></View>
-        <TouchableOpacity style={styles.primaryButton} onPress={onLogin}><Text style={styles.primaryButtonText}>Continue securely</Text></TouchableOpacity>
-        <Text style={styles.loginSecurityHint}>Secure access for PG owners</Text>
+        <View style={styles.loginInput}>
+          <Text style={styles.prefix}>+91</Text>
+          <TextInput style={styles.flex} placeholder="Enter mobile number" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
+        </View>
+        {otpSent ? (
+          <>
+            <Text style={[styles.loginFieldLabel, styles.otpLabel]}>OTP CODE</Text>
+            <View style={styles.loginInput}>
+              <TextInput style={styles.flex} placeholder="Enter OTP" keyboardType="number-pad" value={otp} onChangeText={setOtp} />
+            </View>
+          </>
+        ) : null}
+        {error ? <Text style={styles.authError}>{error}</Text> : null}
+        <TouchableOpacity style={styles.primaryButton} onPress={handleAuthPress} disabled={loading}>
+          <Text style={styles.primaryButtonText}>{loading ? 'Please wait...' : authEnabled ? otpSent ? 'Verify OTP' : 'Send OTP' : 'Continue demo'}</Text>
+        </TouchableOpacity>
+        <Text style={styles.loginSecurityHint}>{authEnabled ? 'Secure access for PG owners and staff' : 'Connect Supabase to enable production login'}</Text>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function HostelSetup({
+  onCreate,
+  onLogout,
+  saving,
+  error,
+}: {
+  onCreate: (input: HostelSetupInput) => Promise<void>;
+  onLogout: () => Promise<void>;
+  saving: boolean;
+  error?: string;
+}) {
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
+  const [contactNumber, setContactNumber] = useState('');
+
+  const handleCreate = async () => {
+    if (!name.trim() || !address.trim()) return;
+    await onCreate({
+      name: name.trim(),
+      address: address.trim(),
+      contactNumber: contactNumber.trim(),
+    });
+  };
+
+  return (
+    <SafeAreaView style={styles.loginScreen}>
+      <View style={styles.setupCard}>
+        <Text style={styles.loginTitle}>Create your hostel</Text>
+        <Text style={styles.loginCaption}>This becomes your owner workspace. Staff can be invited after setup.</Text>
+        <View style={styles.formField}><Text style={styles.fieldLabel}>HOSTEL / PG NAME</Text><TextInput placeholder="Example: Greenview PG" style={styles.fieldInput} value={name} onChangeText={setName} /></View>
+        <View style={styles.formField}><Text style={styles.fieldLabel}>ADDRESS</Text><TextInput placeholder="Area, city" style={styles.fieldInput} value={address} onChangeText={setAddress} /></View>
+        <View style={styles.formField}><Text style={styles.fieldLabel}>CONTACT NUMBER</Text><TextInput placeholder="+91" style={styles.fieldInput} value={contactNumber} onChangeText={setContactNumber} keyboardType="phone-pad" /></View>
+        {error ? <Text style={styles.authError}>{error}</Text> : null}
+        <TouchableOpacity style={styles.primaryButton} onPress={handleCreate} disabled={saving}><Text style={styles.primaryButtonText}>{saving ? 'Creating...' : 'Create hostel'}</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.secondaryButton} onPress={onLogout}><Text style={styles.secondaryButtonText}>Logout</Text></TouchableOpacity>
       </View>
     </SafeAreaView>
   );
@@ -572,12 +702,20 @@ function BottomNav({ active, onPress }: { active: Tab; onPress: (tab: Tab) => vo
 }
 
 export default function App() {
-  const [loggedIn, setLoggedIn] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [demoMode, setDemoMode] = useState(!isSupabaseConfigured);
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | undefined>();
   const [tab, setTab] = useState<Tab>('Home');
   const [pgData, setPgData] = useState<PgMasterData>(fallbackData);
   const [dataSource, setDataSource] = useState<'supabase' | 'demo'>('demo');
   const [dataError, setDataError] = useState<string | undefined>();
   const [loadingData, setLoadingData] = useState(false);
+  const [needsHostelSetup, setNeedsHostelSetup] = useState(false);
+  const [savingHostel, setSavingHostel] = useState(false);
+
+  const authenticated = demoMode || Boolean(session);
 
   const refreshData = async () => {
     setLoadingData(true);
@@ -586,16 +724,45 @@ export default function App() {
       setPgData(result.data);
       setDataSource(result.source);
       setDataError(result.error);
+      setNeedsHostelSetup(Boolean(result.needsHostelSetup));
     } finally {
       setLoadingData(false);
     }
   };
 
   useEffect(() => {
-    if (loggedIn) {
+    if (!isSupabaseConfigured || !supabase) {
+      return;
+    }
+
+    supabase.auth.getSession().then(async ({ data }) => {
+      setSession(data.session);
+      setAuthReady(true);
+      if (data.session) {
+        await acceptStaffInvites();
+      }
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setDemoMode(false);
+      setAuthReady(true);
+      if (nextSession) {
+        acceptStaffInvites().finally(() => refreshData());
+      } else {
+        setPgData(fallbackData);
+        setNeedsHostelSetup(false);
+      }
+    });
+
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (authenticated && authReady) {
       refreshData();
     }
-  }, [loggedIn]);
+  }, [authenticated, authReady]);
 
   const handleAddTenant = async (input: NewTenantInput) => {
     const nextData = await saveTenant(input, pgData);
@@ -603,15 +770,79 @@ export default function App() {
     setDataError(undefined);
   };
 
+  const handleSendOtp = async (phone: string) => {
+    if (!supabase) return;
+    setAuthLoading(true);
+    setAuthError(undefined);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({ phone });
+      if (error) throw error;
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Unable to send OTP.');
+      throw error;
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (phone: string, token: string) => {
+    if (!supabase) return;
+    setAuthLoading(true);
+    setAuthError(undefined);
+    try {
+      const { data, error } = await supabase.auth.verifyOtp({ phone, token, type: 'sms' });
+      if (error) throw error;
+      setSession(data.session);
+      await acceptStaffInvites();
+      await refreshData();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Unable to verify OTP.');
+      throw error;
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    setSession(null);
+    setDemoMode(false);
+    setTab('Home');
+    setPgData(fallbackData);
+    setNeedsHostelSetup(false);
+  };
+
+  const handleCreateHostel = async (input: HostelSetupInput) => {
+    setSavingHostel(true);
+    setDataError(undefined);
+    try {
+      const nextData = await createOwnerHostel(input);
+      setPgData(nextData);
+      setNeedsHostelSetup(false);
+    } catch (error) {
+      setDataError(error instanceof Error ? error.message : 'Unable to create hostel.');
+    } finally {
+      setSavingHostel(false);
+    }
+  };
+
+  const handleInviteStaff = async (phone: string) => {
+    await inviteStaff({ hostelId: pgData.hostelId, phone });
+  };
+
   const content = useMemo(() => {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
     if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} />;
     if (tab === 'Rent') return <Rent data={pgData} />;
-    if (tab === 'More') return <More data={pgData} />;
+    if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onLogout={handleLogout} />;
     return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} />;
   }, [tab, pgData, loadingData, dataSource, dataError]);
 
-  if (!loggedIn) return <><StatusBar style="dark" /><Login onLogin={() => setLoggedIn(true)} /></>;
+  if (!authReady) return <SafeAreaView style={styles.loginScreen}><Text style={styles.loginTitle}>Loading PGCopilot...</Text></SafeAreaView>;
+  if (!authenticated) return <><StatusBar style="dark" /><Login authEnabled={isSupabaseConfigured} onDemoLogin={() => setDemoMode(true)} onSendOtp={handleSendOtp} onVerifyOtp={handleVerifyOtp} loading={authLoading} error={authError} /></>;
+  if (needsHostelSetup) return <><StatusBar style="dark" /><HostelSetup onCreate={handleCreateHostel} onLogout={handleLogout} saving={savingHostel} error={dataError} /></>;
   return (
     <SafeAreaView style={styles.app}>
       <StatusBar style="dark" />
@@ -722,6 +953,8 @@ const styles = StyleSheet.create({
   fieldInput: { color: colors.ink, fontSize: 13, marginTop: 7, outlineStyle: 'none' } as any,
   primaryButton: { backgroundColor: colors.green, height: 49, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 9 },
   primaryButtonText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
+  secondaryButton: { height: 44, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderWidth: 1, borderColor: colors.line },
+  secondaryButtonText: { color: colors.ink, fontWeight: '800', fontSize: 13 },
   rentHero: { backgroundColor: colors.ink, padding: 18, borderRadius: 16, marginBottom: 15 },
   rentHeroValue: { color: '#FFF', fontSize: 29, fontWeight: '800', marginTop: 8 },
   rentHeroBottom: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
@@ -772,10 +1005,17 @@ const styles = StyleSheet.create({
   logoTextGreen: { color: '#69BE45' },
   loginTagline: { color: '#073060', fontSize: 12, fontWeight: '800', marginTop: 1 },
   loginCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 19, padding: 19, marginBottom: 58, width: '100%', maxWidth: 480, alignSelf: 'center' },
+  setupCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 19, padding: 19, width: '100%', maxWidth: 520, alignSelf: 'center', marginTop: 90 },
   loginTitle: { color: colors.ink, fontSize: 21, fontWeight: '800' },
   loginCaption: { color: colors.muted, fontSize: 13, marginTop: 5, marginBottom: 21 },
   loginFieldLabel: { color: colors.muted, fontSize: 10, fontWeight: '800', letterSpacing: 0.8, marginBottom: 7 },
+  otpLabel: { marginTop: 12 },
   loginInput: { height: 48, borderWidth: 1, borderColor: colors.line, borderRadius: 10, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 10 },
   prefix: { color: colors.ink, fontWeight: '700', paddingRight: 10, borderRightWidth: 1, borderRightColor: colors.line },
+  authError: { color: colors.red, fontSize: 12, fontWeight: '700', marginTop: 10 },
   loginSecurityHint: { color: colors.muted, textAlign: 'center', fontSize: 11, marginTop: 14 },
+  inviteCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 14, marginBottom: 20 },
+  inviteMessage: { color: colors.green, fontSize: 12, fontWeight: '700', marginTop: 10 },
+  logoutButton: { height: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.card, marginBottom: 20 },
+  logoutText: { color: colors.red, fontSize: 13, fontWeight: '800' },
 });

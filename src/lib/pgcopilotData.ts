@@ -3,6 +3,7 @@ import { isSupabaseConfigured, supabase } from './supabase';
 export type BedStatus = 'Occupied' | 'Vacant' | 'Reserved' | 'Maintenance';
 export type RentStatus = 'Paid' | 'Partial' | 'Pending';
 export type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
+export type UserRole = 'Owner' | 'Staff';
 
 export type Room = {
   id?: string;
@@ -33,11 +34,20 @@ export type Expense = {
 
 export type PgMasterData = {
   hostelId?: string;
+  ownerId?: string;
+  currentUserRole?: UserRole;
   propertyName: string;
   propertyAddress: string;
   rooms: Room[];
   tenants: Tenant[];
   expenses: Expense[];
+};
+
+export type LoadPgMasterResult = {
+  data: PgMasterData;
+  source: 'supabase' | 'demo';
+  error?: string;
+  needsHostelSetup?: boolean;
 };
 
 export type NewTenantInput = {
@@ -48,11 +58,18 @@ export type NewTenantInput = {
   deposit: number;
 };
 
+export type HostelSetupInput = {
+  name: string;
+  address: string;
+  contactNumber?: string;
+};
+
 const tenantTones = ['#DDEFE7', '#E4EEFA', '#FCE9DF', '#F7EED5', '#EAE4F8', '#E0F3F0'];
 
 export const fallbackData: PgMasterData = {
   propertyName: "Greenview Men's PG",
   propertyAddress: 'HSR Layout, Bengaluru',
+  currentUserRole: 'Owner',
   rooms: [
     { number: '101', floor: 'Ground', type: 'Triple', beds: ['Occupied', 'Occupied', 'Vacant'] },
     { number: '102', floor: 'Ground', type: 'Double', beds: ['Occupied', 'Vacant'] },
@@ -74,6 +91,15 @@ export const fallbackData: PgMasterData = {
     { label: 'Electricity', amount: 28500, icon: 'lightning-bolt-outline', tone: 'blue' },
     { label: 'Internet & utilities', amount: 24500, icon: 'wifi', tone: 'green' },
   ],
+};
+
+const emptyHostelData: PgMasterData = {
+  propertyName: 'Create your first hostel',
+  propertyAddress: 'Set up your property to start using PGCopilot',
+  currentUserRole: 'Owner',
+  rooms: [],
+  tenants: [],
+  expenses: [],
 };
 
 export function buildSummary(data: PgMasterData) {
@@ -133,14 +159,36 @@ function normaliseBedStatus(value: string | null | undefined): BedStatus {
   return 'Vacant';
 }
 
-export async function loadPgMasterData(): Promise<{ data: PgMasterData; source: 'supabase' | 'demo'; error?: string }> {
+function normalisePhone(phone: string) {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 10) return `+91${digits}`;
+  return digits.startsWith('91') ? `+${digits}` : phone.trim();
+}
+
+async function currentUserId() {
+  if (!supabase) return undefined;
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id;
+}
+
+export async function acceptStaffInvites() {
+  if (!isSupabaseConfigured || !supabase) return;
+  await supabase.rpc('accept_staff_invites');
+}
+
+export async function loadPgMasterData(): Promise<LoadPgMasterResult> {
   if (!isSupabaseConfigured || !supabase) {
     return { data: fallbackData, source: 'demo' };
   }
 
+  const userId = await currentUserId();
+  if (!userId) {
+    return { data: fallbackData, source: 'demo', error: 'Please login with OTP to load live hostel data.' };
+  }
+
   const { data: hostels, error: hostelError } = await supabase
     .from('hostels')
-    .select('id,name,address')
+    .select('id,name,address,owner_id')
     .order('created_at', { ascending: true })
     .limit(1);
 
@@ -148,10 +196,19 @@ export async function loadPgMasterData(): Promise<{ data: PgMasterData; source: 
     return { data: fallbackData, source: 'demo', error: hostelError.message };
   }
 
-  const hostel = hostels?.[0];
+  const hostel = hostels?.[0] as any;
   if (!hostel) {
-    return { data: fallbackData, source: 'demo', error: 'No hostel record found in Supabase.' };
+    return { data: emptyHostelData, source: 'supabase', needsHostelSetup: true };
   }
+
+  const { data: membership } = await supabase
+    .from('hostel_members')
+    .select('role')
+    .eq('hostel_id', hostel.id)
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  const role = (membership?.role === 'Staff' ? 'Staff' : 'Owner') as UserRole;
 
   const [roomsResult, tenantsResult, expensesResult] = await Promise.all([
     supabase
@@ -215,6 +272,8 @@ export async function loadPgMasterData(): Promise<{ data: PgMasterData; source: 
   return {
     data: {
       hostelId: hostel.id,
+      ownerId: hostel.owner_id,
+      currentUserRole: role,
       propertyName: hostel.name,
       propertyAddress: hostel.address,
       rooms,
@@ -223,6 +282,48 @@ export async function loadPgMasterData(): Promise<{ data: PgMasterData; source: 
     },
     source: 'supabase',
   };
+}
+
+export async function createOwnerHostel(input: HostelSetupInput) {
+  if (!isSupabaseConfigured || !supabase) return fallbackData;
+  const userId = await currentUserId();
+  if (!userId) throw new Error('Login session expired. Please login again.');
+
+  const { error } = await supabase.from('hostels').insert({
+    name: input.name,
+    address: input.address,
+    contact_number: input.contactNumber || null,
+    owner_id: userId,
+    created_by: userId,
+  });
+
+  if (error) throw new Error(error.message);
+  const refreshed = await loadPgMasterData();
+  return refreshed.data;
+}
+
+export async function inviteStaff(input: { hostelId?: string; phone: string }) {
+  if (!isSupabaseConfigured || !supabase || !input.hostelId) {
+    throw new Error('Live hostel setup is required before inviting staff.');
+  }
+  const userId = await currentUserId();
+  if (!userId) throw new Error('Login session expired. Please login again.');
+
+  const { data: hostel } = await supabase
+    .from('hostels')
+    .select('owner_id')
+    .eq('id', input.hostelId)
+    .maybeSingle();
+
+  const { error } = await supabase.from('staff_invites').insert({
+    hostel_id: input.hostelId,
+    owner_id: (hostel as any)?.owner_id ?? userId,
+    phone_number: normalisePhone(input.phone),
+    role: 'Staff',
+    invited_by: userId,
+  });
+
+  if (error) throw new Error(error.message);
 }
 
 export async function createTenant(input: NewTenantInput, currentData: PgMasterData) {
@@ -244,6 +345,7 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
     };
   }
 
+  const userId = await currentUserId();
   let bedId: string | null = null;
   if (input.roomBed.trim()) {
     const { data: bed } = await supabase
@@ -252,11 +354,13 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
       .eq('hostel_id', currentData.hostelId)
       .ilike('bed_number', input.roomBed.trim())
       .maybeSingle();
-    bedId = bed?.id ?? null;
+    bedId = (bed as any)?.id ?? null;
   }
 
   const { error } = await supabase.from('tenants').insert({
     hostel_id: currentData.hostelId,
+    owner_id: currentData.ownerId,
+    created_by: userId,
     bed_id: bedId,
     full_name: input.name,
     mobile_number: input.mobile,

@@ -1,7 +1,17 @@
 create extension if not exists pgcrypto;
 
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  phone_number text,
+  full_name text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.hostels (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
+  created_by uuid references auth.users(id) on delete set null,
   name text not null,
   address text not null,
   contact_number text,
@@ -11,9 +21,39 @@ create table if not exists public.hostels (
   created_at timestamptz not null default now()
 );
 
-create table if not exists public.rooms (
+alter table public.hostels add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.hostels add column if not exists created_by uuid references auth.users(id) on delete set null;
+
+create table if not exists public.hostel_members (
   id uuid primary key default gen_random_uuid(),
   hostel_id uuid not null references public.hostels(id) on delete cascade,
+  owner_id uuid references auth.users(id) on delete set null,
+  user_id uuid references auth.users(id) on delete cascade,
+  role text not null check (role in ('Owner', 'Staff')),
+  status text not null default 'Active' check (status in ('Active', 'Disabled')),
+  invited_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  unique (hostel_id, user_id)
+);
+
+create table if not exists public.staff_invites (
+  id uuid primary key default gen_random_uuid(),
+  hostel_id uuid not null references public.hostels(id) on delete cascade,
+  owner_id uuid references auth.users(id) on delete set null,
+  phone_number text not null,
+  role text not null default 'Staff' check (role in ('Staff')),
+  status text not null default 'Pending' check (status in ('Pending', 'Accepted', 'Revoked')),
+  invited_by uuid references auth.users(id) on delete set null,
+  accepted_by uuid references auth.users(id) on delete set null,
+  accepted_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.rooms (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
+  hostel_id uuid not null references public.hostels(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
   room_number text not null,
   floor text not null,
   room_type text not null check (room_type in ('Single', 'Double', 'Triple', 'Dormitory')),
@@ -21,19 +61,29 @@ create table if not exists public.rooms (
   unique (hostel_id, room_number)
 );
 
+alter table public.rooms add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.rooms add column if not exists created_by uuid references auth.users(id) on delete set null;
+
 create table if not exists public.beds (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
   hostel_id uuid not null references public.hostels(id) on delete cascade,
   room_id uuid not null references public.rooms(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
   bed_number text not null,
   status text not null check (status in ('Occupied', 'Vacant', 'Reserved', 'Maintenance')),
   created_at timestamptz not null default now(),
   unique (hostel_id, bed_number)
 );
 
+alter table public.beds add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.beds add column if not exists created_by uuid references auth.users(id) on delete set null;
+
 create table if not exists public.tenants (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
   hostel_id uuid not null references public.hostels(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
   bed_id uuid references public.beds(id) on delete set null,
   full_name text not null,
   mobile_number text,
@@ -50,9 +100,14 @@ create table if not exists public.tenants (
   created_at timestamptz not null default now()
 );
 
+alter table public.tenants add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.tenants add column if not exists created_by uuid references auth.users(id) on delete set null;
+
 create table if not exists public.expenses (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
   hostel_id uuid not null references public.hostels(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
   label text not null,
   category text not null default 'Other',
   amount numeric not null default 0,
@@ -60,9 +115,14 @@ create table if not exists public.expenses (
   created_at timestamptz not null default now()
 );
 
+alter table public.expenses add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.expenses add column if not exists created_by uuid references auth.users(id) on delete set null;
+
 create table if not exists public.rent_payments (
   id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
   hostel_id uuid not null references public.hostels(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
   tenant_id uuid not null references public.tenants(id) on delete cascade,
   rent_month date not null,
   amount numeric not null,
@@ -73,15 +133,192 @@ create table if not exists public.rent_payments (
   created_at timestamptz not null default now()
 );
 
+alter table public.rent_payments add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.rent_payments add column if not exists created_by uuid references auth.users(id) on delete set null;
+
+create index if not exists hostels_owner_id_idx on public.hostels(owner_id);
+create index if not exists hostel_members_user_id_idx on public.hostel_members(user_id);
+create index if not exists hostel_members_hostel_id_idx on public.hostel_members(hostel_id);
+create index if not exists staff_invites_phone_idx on public.staff_invites(phone_number);
+create index if not exists rooms_hostel_id_idx on public.rooms(hostel_id);
+create index if not exists beds_hostel_id_idx on public.beds(hostel_id);
+create index if not exists tenants_hostel_id_idx on public.tenants(hostel_id);
+create index if not exists expenses_hostel_id_idx on public.expenses(hostel_id);
+create index if not exists rent_payments_hostel_id_idx on public.rent_payments(hostel_id);
+
+create or replace function public.normalized_phone(value text)
+returns text
+language sql
+immutable
+as $$
+  select case
+    when value is null then ''
+    when length(regexp_replace(value, '\D', '', 'g')) = 10 then '91' || regexp_replace(value, '\D', '', 'g')
+    when left(regexp_replace(value, '\D', '', 'g'), 1) = '0' and length(regexp_replace(value, '\D', '', 'g')) = 11 then '91' || right(regexp_replace(value, '\D', '', 'g'), 10)
+    else regexp_replace(value, '\D', '', 'g')
+  end;
+$$;
+
+create or replace function public.current_user_phone()
+returns text
+language sql
+stable
+as $$
+  select public.normalized_phone(coalesce(auth.jwt() ->> 'phone', ''));
+$$;
+
+create or replace function public.is_hostel_member(target_hostel_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.hostel_members hm
+    where hm.hostel_id = target_hostel_id
+      and hm.user_id = auth.uid()
+      and hm.status = 'Active'
+  );
+$$;
+
+create or replace function public.is_hostel_owner(target_hostel_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.hostels h
+    where h.id = target_hostel_id
+      and h.owner_id = auth.uid()
+  ) or exists (
+    select 1
+    from public.hostel_members hm
+    where hm.hostel_id = target_hostel_id
+      and hm.user_id = auth.uid()
+      and hm.role = 'Owner'
+      and hm.status = 'Active'
+  );
+$$;
+
+create or replace function public.can_write_hostel_data(target_hostel_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.hostel_members hm
+    where hm.hostel_id = target_hostel_id
+      and hm.user_id = auth.uid()
+      and hm.role in ('Owner', 'Staff')
+      and hm.status = 'Active'
+  );
+$$;
+
+create or replace function public.sync_new_auth_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, phone_number)
+  values (new.id, public.normalized_phone(coalesce(new.phone, '')))
+  on conflict (id) do update
+    set phone_number = excluded.phone_number,
+        updated_at = now();
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created_profile on auth.users;
+create trigger on_auth_user_created_profile
+after insert or update of phone on auth.users
+for each row execute function public.sync_new_auth_user();
+
+create or replace function public.create_owner_membership()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.owner_id is not null then
+    insert into public.hostel_members (hostel_id, owner_id, user_id, role, status, invited_by)
+    values (new.id, new.owner_id, new.owner_id, 'Owner', 'Active', new.created_by)
+    on conflict (hostel_id, user_id) do update
+      set role = 'Owner',
+          status = 'Active',
+          owner_id = excluded.owner_id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_hostel_created_owner_membership on public.hostels;
+create trigger on_hostel_created_owner_membership
+after insert on public.hostels
+for each row execute function public.create_owner_membership();
+
+create or replace function public.accept_staff_invites()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  invite record;
+  user_phone text := public.current_user_phone();
+begin
+  if auth.uid() is null or user_phone = '' then
+    return;
+  end if;
+
+  insert into public.profiles (id, phone_number)
+  values (auth.uid(), user_phone)
+  on conflict (id) do update
+    set phone_number = excluded.phone_number,
+        updated_at = now();
+
+  for invite in
+    select *
+    from public.staff_invites
+    where status = 'Pending'
+      and public.normalized_phone(phone_number) = user_phone
+  loop
+    insert into public.hostel_members (hostel_id, owner_id, user_id, role, status, invited_by)
+    values (invite.hostel_id, invite.owner_id, auth.uid(), invite.role, 'Active', invite.invited_by)
+    on conflict (hostel_id, user_id) do update
+      set role = excluded.role,
+          status = 'Active',
+          owner_id = excluded.owner_id;
+
+    update public.staff_invites
+    set status = 'Accepted',
+        accepted_by = auth.uid(),
+        accepted_at = now()
+    where id = invite.id;
+  end loop;
+end;
+$$;
+
+alter table public.profiles enable row level security;
 alter table public.hostels enable row level security;
+alter table public.hostel_members enable row level security;
+alter table public.staff_invites enable row level security;
 alter table public.rooms enable row level security;
 alter table public.beds enable row level security;
 alter table public.tenants enable row level security;
 alter table public.expenses enable row level security;
 alter table public.rent_payments enable row level security;
 
--- MVP policies: allow anon access for your first private test build.
--- Before public launch, replace these with owner/staff login based policies.
 drop policy if exists "MVP read hostels" on public.hostels;
 drop policy if exists "MVP write hostels" on public.hostels;
 drop policy if exists "MVP read rooms" on public.rooms;
@@ -95,69 +332,84 @@ drop policy if exists "MVP write expenses" on public.expenses;
 drop policy if exists "MVP read rent payments" on public.rent_payments;
 drop policy if exists "MVP write rent payments" on public.rent_payments;
 
-create policy "MVP read hostels" on public.hostels for select using (true);
-create policy "MVP write hostels" on public.hostels for all using (true) with check (true);
-create policy "MVP read rooms" on public.rooms for select using (true);
-create policy "MVP write rooms" on public.rooms for all using (true) with check (true);
-create policy "MVP read beds" on public.beds for select using (true);
-create policy "MVP write beds" on public.beds for all using (true) with check (true);
-create policy "MVP read tenants" on public.tenants for select using (true);
-create policy "MVP write tenants" on public.tenants for all using (true) with check (true);
-create policy "MVP read expenses" on public.expenses for select using (true);
-create policy "MVP write expenses" on public.expenses for all using (true) with check (true);
-create policy "MVP read rent payments" on public.rent_payments for select using (true);
-create policy "MVP write rent payments" on public.rent_payments for all using (true) with check (true);
+drop policy if exists "Profiles are visible to owner" on public.profiles;
+drop policy if exists "Users update own profile" on public.profiles;
+create policy "Profiles are visible to owner" on public.profiles
+  for select using (id = auth.uid());
+create policy "Users update own profile" on public.profiles
+  for update using (id = auth.uid()) with check (id = auth.uid());
 
-with hostel as (
-  insert into public.hostels (name, address, contact_number, upi_id)
-  values ('Greenview Men''s PG', 'HSR Layout, Bengaluru', '98450 00000', 'greenviewpg@upi')
-  returning id
-),
-room_seed as (
-  insert into public.rooms (hostel_id, room_number, floor, room_type)
-  select id, room_number, floor, room_type
-  from hostel
-  cross join (values
-    ('101', 'Ground', 'Triple'),
-    ('102', 'Ground', 'Double'),
-    ('201', '1st Floor', 'Triple'),
-    ('202', '1st Floor', 'Double'),
-    ('301', '2nd Floor', 'Triple')
-  ) as r(room_number, floor, room_type)
-  returning id, hostel_id, room_number
-),
-bed_seed as (
-  insert into public.beds (hostel_id, room_id, bed_number, status)
-  select hostel_id, id, bed_number, status
-  from room_seed
-  join (values
-    ('101', '101-A', 'Occupied'), ('101', '101-B', 'Occupied'), ('101', '101-C', 'Vacant'),
-    ('102', '102-A', 'Occupied'), ('102', '102-B', 'Vacant'),
-    ('201', '201-A', 'Occupied'), ('201', '201-B', 'Occupied'), ('201', '201-C', 'Occupied'),
-    ('202', '202-A', 'Reserved'), ('202', '202-B', 'Vacant'),
-    ('301', '301-A', 'Occupied'), ('301', '301-B', 'Maintenance'), ('301', '301-C', 'Vacant')
-  ) as b(room_number, bed_number, status) using (room_number)
-  returning id, hostel_id, bed_number
-),
-tenant_seed as (
-  insert into public.tenants (hostel_id, bed_id, full_name, mobile_number, monthly_rent, deposit_amount, rent_status)
-  select hostel_id, id, full_name, mobile_number, monthly_rent, 15000, rent_status
-  from bed_seed
-  join (values
-    ('101-A', 'Ramesh S', '98450 23891', 8500, 'Paid'),
-    ('101-B', 'Arun Kumar', '99721 18452', 8500, 'Paid'),
-    ('201-A', 'John N', '98863 53419', 8000, 'Pending'),
-    ('201-B', 'Rahul V', '98455 90876', 8500, 'Partial'),
-    ('301-A', 'Kiran P', '96631 72340', 9000, 'Pending'),
-    ('201-C', 'Sanjay M', '99001 32118', 8500, 'Paid')
-  ) as t(bed_number, full_name, mobile_number, monthly_rent, rent_status) using (bed_number)
-)
-insert into public.expenses (hostel_id, label, category, amount)
-select id, label, category, amount
-from hostel
-cross join (values
-  ('Food supplies', 'Food', 65000),
-  ('Staff salaries', 'Salary', 72000),
-  ('Electricity', 'Utilities', 28500),
-  ('Internet & utilities', 'Utilities', 24500)
-) as e(label, category, amount);
+drop policy if exists "Members can read assigned hostels" on public.hostels;
+drop policy if exists "Authenticated users can create own hostels" on public.hostels;
+drop policy if exists "Owners can update hostels" on public.hostels;
+drop policy if exists "Owners can delete hostels" on public.hostels;
+create policy "Members can read assigned hostels" on public.hostels
+  for select using (public.is_hostel_member(id) or owner_id = auth.uid());
+create policy "Authenticated users can create own hostels" on public.hostels
+  for insert with check (auth.uid() is not null and owner_id = auth.uid() and created_by = auth.uid());
+create policy "Owners can update hostels" on public.hostels
+  for update using (public.is_hostel_owner(id)) with check (public.is_hostel_owner(id));
+create policy "Owners can delete hostels" on public.hostels
+  for delete using (public.is_hostel_owner(id));
+
+drop policy if exists "Members can read memberships" on public.hostel_members;
+drop policy if exists "Owners manage memberships" on public.hostel_members;
+create policy "Members can read memberships" on public.hostel_members
+  for select using (user_id = auth.uid() or public.is_hostel_owner(hostel_id));
+create policy "Owners manage memberships" on public.hostel_members
+  for all using (public.is_hostel_owner(hostel_id)) with check (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Owners manage staff invites" on public.staff_invites;
+drop policy if exists "Invited phone can read invite" on public.staff_invites;
+create policy "Owners manage staff invites" on public.staff_invites
+  for all using (public.is_hostel_owner(hostel_id)) with check (public.is_hostel_owner(hostel_id));
+create policy "Invited phone can read invite" on public.staff_invites
+  for select using (public.normalized_phone(phone_number) = public.current_user_phone());
+
+drop policy if exists "Members read rooms" on public.rooms;
+drop policy if exists "Owner staff write rooms" on public.rooms;
+drop policy if exists "Owner staff update rooms" on public.rooms;
+drop policy if exists "Owners delete rooms" on public.rooms;
+create policy "Members read rooms" on public.rooms for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write rooms" on public.rooms for insert with check (public.can_write_hostel_data(hostel_id));
+create policy "Owner staff update rooms" on public.rooms for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
+create policy "Owners delete rooms" on public.rooms for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read beds" on public.beds;
+drop policy if exists "Owner staff write beds" on public.beds;
+drop policy if exists "Owner staff update beds" on public.beds;
+drop policy if exists "Owners delete beds" on public.beds;
+create policy "Members read beds" on public.beds for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write beds" on public.beds for insert with check (public.can_write_hostel_data(hostel_id));
+create policy "Owner staff update beds" on public.beds for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
+create policy "Owners delete beds" on public.beds for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read tenants" on public.tenants;
+drop policy if exists "Owner staff write tenants" on public.tenants;
+drop policy if exists "Owner staff update tenants" on public.tenants;
+drop policy if exists "Owners delete tenants" on public.tenants;
+create policy "Members read tenants" on public.tenants for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write tenants" on public.tenants for insert with check (public.can_write_hostel_data(hostel_id));
+create policy "Owner staff update tenants" on public.tenants for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
+create policy "Owners delete tenants" on public.tenants for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read expenses" on public.expenses;
+drop policy if exists "Owner staff write expenses" on public.expenses;
+drop policy if exists "Owner staff update expenses" on public.expenses;
+drop policy if exists "Owners delete expenses" on public.expenses;
+create policy "Members read expenses" on public.expenses for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write expenses" on public.expenses for insert with check (public.can_write_hostel_data(hostel_id));
+create policy "Owner staff update expenses" on public.expenses for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
+create policy "Owners delete expenses" on public.expenses for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read rent payments" on public.rent_payments;
+drop policy if exists "Owner staff write rent payments" on public.rent_payments;
+drop policy if exists "Owner staff update rent payments" on public.rent_payments;
+drop policy if exists "Owners delete rent payments" on public.rent_payments;
+create policy "Members read rent payments" on public.rent_payments for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write rent payments" on public.rent_payments for insert with check (public.can_write_hostel_data(hostel_id));
+create policy "Owner staff update rent payments" on public.rent_payments for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
+create policy "Owners delete rent payments" on public.rent_payments for delete using (public.is_hostel_owner(hostel_id));
+
+-- Demo data is intentionally no longer inserted by this production schema.
+-- Create a hostel from the app after logging in with mobile OTP.

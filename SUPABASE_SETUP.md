@@ -1,50 +1,81 @@
 # PGCopilot Supabase Setup
 
-PGCopilot now uses one shared Supabase PostgreSQL database for:
+PGCopilot uses one shared Supabase project for:
 
-- Expo web app / admin portal
-- Android app
-- iOS app
+- Web app / Hostinger deployment
+- Expo Android app
+- Expo iOS app
 
-## 1. Create Supabase Project
+## 1. Enable Phone OTP
 
-1. Open https://supabase.com
-2. Create a new project
-3. Choose a region close to your users
-4. Save the project password somewhere safe
+1. Open your Supabase project.
+2. Go to Authentication > Providers.
+3. Enable Phone.
+4. Configure an SMS provider in Supabase before real users test OTP.
 
-## 2. Create Database Tables
+Without an SMS provider, Supabase phone OTP may not deliver codes in production.
 
-1. Open your Supabase project
-2. Go to SQL Editor
-3. Open `supabase/schema.sql` from this project
-4. Paste the full SQL
-5. Click Run
+## 2. Run Sprint 1 Database Schema
 
-This creates and seeds:
+1. Open Supabase > SQL Editor.
+2. Open `supabase/schema.sql` from this repo.
+3. Paste the full SQL.
+4. Click Run.
 
-- hostels
-- rooms
-- beds
-- tenants
-- expenses
-- rent_payments
+This creates the production-pilot foundation:
+
+- `profiles`
+- `hostels`
+- `hostel_members`
+- `staff_invites`
+- `rooms`
+- `beds`
+- `tenants`
+- `expenses`
+- `rent_payments`
+
+It also enables RLS so users can only access hostels where they are Owner or Staff.
 
 ## 3. Add App Keys
 
-1. In Supabase, go to Project Settings > API
-2. Copy Project URL
-3. Copy anon public key
-4. Create a `.env` file in this project using `.env.example`
+Use only the anon public key in the app.
 
 ```env
 EXPO_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co
 EXPO_PUBLIC_SUPABASE_ANON_KEY=your-supabase-anon-key
 ```
 
-Restart Expo after changing `.env`.
+Never put the Supabase `service_role` secret in Hostinger, Expo, Android, iOS, or GitHub frontend code.
 
-## 4. Run The Apps
+## 4. Hostinger Environment Variables
+
+In Hostinger, add:
+
+```text
+EXPO_PUBLIC_SUPABASE_URL
+EXPO_PUBLIC_SUPABASE_ANON_KEY
+```
+
+Then redeploy. Expo web bakes these values during `npm run build:web`.
+
+## 5. First Owner Setup
+
+1. Open the app.
+2. Login with mobile OTP.
+3. If no hostel exists for the logged-in owner, the app shows Create Hostel.
+4. Create the hostel.
+5. The SQL trigger automatically creates the Owner membership.
+
+## 6. Staff Invite Flow
+
+1. Owner opens More > Invite staff.
+2. Owner enters staff mobile number.
+3. Staff logs in with OTP using that number.
+4. The app accepts matching pending invites and assigns Staff role.
+
+Staff can add/update hostel data, but delete policies are owner-only.
+
+## 7. Local Commands
 
 Web:
 
@@ -61,11 +92,5 @@ npx expo run:android
 iOS / EAS:
 
 ```powershell
-npx eas-cli build --platform ios --profile production
+npx eas-cli build --platform ios --profile ios-device
 ```
-
-## 5. Current Security Note
-
-The SQL file includes open MVP policies so you can test quickly. Before public launch, replace them with owner/staff login policies using Supabase Auth and Row Level Security.
-
-The app will show demo data if Supabase keys are missing or if Supabase returns an error.
