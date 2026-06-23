@@ -428,10 +428,20 @@ begin
     where status = 'Pending'
       and public.normalized_phone(phone_number) = user_phone
   loop
+    if invite.owner_id = auth.uid() then
+      update public.staff_invites
+      set status = 'Revoked'
+      where id = invite.id;
+      continue;
+    end if;
+
     insert into public.hostel_members (hostel_id, owner_id, user_id, role, status, invited_by, created_by)
     values (invite.hostel_id, invite.owner_id, auth.uid(), invite.role, 'Active', invite.invited_by, invite.invited_by)
     on conflict (hostel_id, user_id) do update
-      set role = excluded.role,
+      set role = case
+            when public.hostel_members.role = 'Owner' then 'Owner'
+            else excluded.role
+          end,
           status = 'Active',
           owner_id = excluded.owner_id,
           created_by = coalesce(public.hostel_members.created_by, excluded.created_by);

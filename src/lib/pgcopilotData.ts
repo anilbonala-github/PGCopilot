@@ -192,6 +192,12 @@ async function currentUserId() {
   return data.user?.id;
 }
 
+async function currentUserPhone() {
+  if (!supabase) return undefined;
+  const { data } = await supabase.auth.getUser();
+  return data.user?.phone;
+}
+
 export async function acceptStaffInvites() {
   if (!isSupabaseConfigured || !supabase) return;
   await supabase.rpc('accept_staff_invites');
@@ -238,7 +244,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
     ownerId: hostel.owner_id,
     name: hostel.name,
     address: hostel.address,
-    role: roleByHostel.get(hostel.id) ?? (hostel.owner_id === userId ? 'Owner' : 'Staff'),
+    role: hostel.owner_id === userId ? 'Owner' : roleByHostel.get(hostel.id) ?? 'Staff',
   }));
 
   const hostel = hostelRows.find((item) => item.id === selectedHostelId) ?? hostelRows[0];
@@ -348,6 +354,12 @@ export async function inviteStaff(input: { hostelId?: string; phone: string }) {
   }
   const userId = await currentUserId();
   if (!userId) throw new Error('Login session expired. Please login again.');
+  const ownerPhone = normalisePhone(await currentUserPhone() ?? '');
+  const invitePhone = normalisePhone(input.phone);
+
+  if (ownerPhone && ownerPhone === invitePhone) {
+    throw new Error('This mobile number is already the owner. Use a different staff mobile number.');
+  }
 
   const { data: hostel } = await supabase
     .from('hostels')
@@ -359,7 +371,7 @@ export async function inviteStaff(input: { hostelId?: string; phone: string }) {
     hostel_id: input.hostelId,
     owner_id: (hostel as any)?.owner_id ?? userId,
     created_by: userId,
-    phone_number: normalisePhone(input.phone),
+    phone_number: invitePhone,
     role: 'Staff',
     invited_by: userId,
   });
