@@ -185,7 +185,14 @@ alter table public.rent_payments add column if not exists notes text;
 
 do $$
 begin
-  alter table public.rent_payments add constraint rent_payments_tenant_month_key unique (tenant_id, rent_month);
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'rent_payments_tenant_month_key'
+      and conrelid = 'public.rent_payments'::regclass
+  ) then
+    alter table public.rent_payments add constraint rent_payments_tenant_month_key unique (tenant_id, rent_month);
+  end if;
 exception
   when duplicate_object then null;
 end $$;
