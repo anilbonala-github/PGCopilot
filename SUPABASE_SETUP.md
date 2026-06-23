@@ -155,7 +155,21 @@ Supabase test phone numbers must be international format without spaces, dashes,
 
 That test user will be mapped as `Owner` for the seeded `Greenview Men's PG` hostel, including rooms, beds, tenants, and expenses.
 
-## 8. Local Commands
+## 8. Rent Billing And Receipts
+
+Run the latest `supabase/schema.sql` before using rent billing in production.
+
+The schema adds:
+
+- `rent_payments` monthly bills with tenant, amount, due date, status, paid amount, payment mode, and notes.
+- `rent_receipts` payment history with receipt number, payment date, amount, payment mode, and notes.
+- `generate_monthly_rent(hostel_id, rent_month)` to create one monthly bill per active tenant.
+- `record_rent_payment(rent_payment_id, amount, payment_mode, notes)` to record Cash, UPI, or Bank Transfer payments and update bill status.
+- RLS policies so owners and staff can access only their hostel billing records.
+
+Receipts can be downloaded/shared as PDF from the Rent tab after a payment is recorded.
+
+## 9. Local Commands
 
 Web:
 

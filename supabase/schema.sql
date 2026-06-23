@@ -167,11 +167,38 @@ create table if not exists public.rent_payments (
   due_date date not null,
   status text not null default 'Pending' check (status in ('Paid', 'Partial', 'Pending')),
   payment_mode text check (payment_mode in ('UPI', 'Cash', 'Bank Transfer')),
+  notes text,
   created_at timestamptz not null default now()
 );
 
 alter table public.rent_payments add column if not exists owner_id uuid references auth.users(id) on delete set null;
 alter table public.rent_payments add column if not exists created_by uuid references auth.users(id) on delete set null;
+alter table public.rent_payments add column if not exists notes text;
+
+do $$
+begin
+  alter table public.rent_payments add constraint rent_payments_tenant_month_key unique (tenant_id, rent_month);
+exception
+  when duplicate_object then null;
+end $$;
+
+create table if not exists public.rent_receipts (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
+  hostel_id uuid not null references public.hostels(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
+  rent_payment_id uuid not null references public.rent_payments(id) on delete cascade,
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  receipt_number text not null unique,
+  payment_date timestamptz not null default now(),
+  amount numeric not null check (amount > 0),
+  payment_mode text not null check (payment_mode in ('UPI', 'Cash', 'Bank Transfer')),
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.rent_receipts add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.rent_receipts add column if not exists created_by uuid references auth.users(id) on delete set null;
 
 create table if not exists public.tenant_documents (
   id uuid primary key default gen_random_uuid(),
@@ -200,6 +227,10 @@ create index if not exists beds_hostel_id_idx on public.beds(hostel_id);
 create index if not exists tenants_hostel_id_idx on public.tenants(hostel_id);
 create index if not exists expenses_hostel_id_idx on public.expenses(hostel_id);
 create index if not exists rent_payments_hostel_id_idx on public.rent_payments(hostel_id);
+create index if not exists rent_payments_tenant_id_idx on public.rent_payments(tenant_id);
+create index if not exists rent_receipts_hostel_id_idx on public.rent_receipts(hostel_id);
+create index if not exists rent_receipts_payment_id_idx on public.rent_receipts(rent_payment_id);
+create index if not exists rent_receipts_tenant_id_idx on public.rent_receipts(tenant_id);
 create index if not exists tenant_documents_hostel_id_idx on public.tenant_documents(hostel_id);
 create index if not exists tenant_documents_tenant_id_idx on public.tenant_documents(tenant_id);
 
@@ -447,6 +478,159 @@ create trigger after_tenants_sync_bed_status
 after insert or update of bed_id, status, is_active on public.tenants
 for each row execute function public.sync_bed_status_from_tenant();
 
+create or replace function public.generate_monthly_rent(target_hostel_id uuid, target_month date default date_trunc('month', current_date)::date)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  generated_count integer := 0;
+begin
+  if not public.can_write_hostel_data(target_hostel_id) then
+    raise exception 'You do not have access to generate rent for this hostel.';
+  end if;
+
+  insert into public.rent_payments (
+    owner_id,
+    hostel_id,
+    created_by,
+    tenant_id,
+    rent_month,
+    amount,
+    paid_amount,
+    due_date,
+    status
+  )
+  select
+    t.owner_id,
+    t.hostel_id,
+    auth.uid(),
+    t.id,
+    date_trunc('month', target_month)::date,
+    t.monthly_rent,
+    0,
+    (
+      date_trunc('month', target_month)::date
+      + (least(greatest(coalesce(t.rent_due_day, 5), 1), 28) - 1)
+    )::date,
+    'Pending'
+  from public.tenants t
+  where t.hostel_id = target_hostel_id
+    and t.status = 'Active'
+    and t.is_active = true
+    and t.monthly_rent > 0
+  on conflict (tenant_id, rent_month) do nothing;
+
+  get diagnostics generated_count = row_count;
+  return generated_count;
+end;
+$$;
+
+create or replace function public.next_receipt_number(target_hostel_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  return 'PGC-' || to_char(now(), 'YYYYMMDD') || '-' || upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 8));
+end;
+$$;
+
+create or replace function public.record_rent_payment(
+  target_rent_payment_id uuid,
+  payment_amount numeric,
+  payment_mode_value text,
+  payment_notes text default null
+)
+returns public.rent_receipts
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  bill public.rent_payments%rowtype;
+  receipt public.rent_receipts%rowtype;
+  next_paid_amount numeric;
+begin
+  if payment_amount <= 0 then
+    raise exception 'Payment amount must be greater than zero.';
+  end if;
+
+  if payment_mode_value not in ('Cash', 'UPI', 'Bank Transfer') then
+    raise exception 'Invalid payment mode.';
+  end if;
+
+  select *
+  into bill
+  from public.rent_payments
+  where id = target_rent_payment_id
+  for update;
+
+  if bill.id is null then
+    raise exception 'Rent bill not found.';
+  end if;
+
+  if not public.can_write_hostel_data(bill.hostel_id) then
+    raise exception 'You do not have access to record this payment.';
+  end if;
+
+  if payment_amount > (bill.amount - coalesce(bill.paid_amount, 0)) then
+    raise exception 'Payment amount exceeds pending rent.';
+  end if;
+
+  next_paid_amount := least(bill.amount, coalesce(bill.paid_amount, 0) + payment_amount);
+
+  insert into public.rent_receipts (
+    owner_id,
+    hostel_id,
+    created_by,
+    rent_payment_id,
+    tenant_id,
+    receipt_number,
+    payment_date,
+    amount,
+    payment_mode,
+    notes
+  )
+  values (
+    bill.owner_id,
+    bill.hostel_id,
+    auth.uid(),
+    bill.id,
+    bill.tenant_id,
+    public.next_receipt_number(bill.hostel_id),
+    now(),
+    payment_amount,
+    payment_mode_value,
+    payment_notes
+  )
+  returning * into receipt;
+
+  update public.rent_payments
+  set paid_amount = next_paid_amount,
+      payment_mode = payment_mode_value,
+      notes = payment_notes,
+      status = case
+        when next_paid_amount >= amount then 'Paid'
+        when next_paid_amount > 0 then 'Partial'
+        else 'Pending'
+      end
+  where id = bill.id;
+
+  update public.tenants
+  set rent_status = case
+    when next_paid_amount >= bill.amount then 'Paid'
+    when next_paid_amount > 0 then 'Partial'
+    else 'Pending'
+  end
+  where id = bill.tenant_id;
+
+  return receipt;
+end;
+$$;
+
 create or replace function public.apply_hostel_creator_fields()
 returns trigger
 language plpgsql
@@ -523,6 +707,11 @@ create trigger before_rent_payments_insert_audit_fields
 before insert on public.rent_payments
 for each row execute function public.apply_hostel_audit_fields();
 
+drop trigger if exists before_rent_receipts_insert_audit_fields on public.rent_receipts;
+create trigger before_rent_receipts_insert_audit_fields
+before insert on public.rent_receipts
+for each row execute function public.apply_hostel_audit_fields();
+
 drop trigger if exists before_tenant_documents_insert_audit_fields on public.tenant_documents;
 create trigger before_tenant_documents_insert_audit_fields
 before insert on public.tenant_documents
@@ -581,6 +770,13 @@ set owner_id = coalesce(rp.owner_id, h.owner_id),
 from public.hostels h
 where rp.hostel_id = h.id
   and (rp.owner_id is null or rp.created_by is null);
+
+update public.rent_receipts rr
+set owner_id = coalesce(rr.owner_id, h.owner_id),
+    created_by = coalesce(rr.created_by, h.owner_id)
+from public.hostels h
+where rr.hostel_id = h.id
+  and (rr.owner_id is null or rr.created_by is null);
 
 update public.tenant_documents td
 set owner_id = coalesce(td.owner_id, h.owner_id),
@@ -697,6 +893,7 @@ alter table public.beds enable row level security;
 alter table public.tenants enable row level security;
 alter table public.expenses enable row level security;
 alter table public.rent_payments enable row level security;
+alter table public.rent_receipts enable row level security;
 alter table public.tenant_documents enable row level security;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
@@ -724,6 +921,8 @@ drop policy if exists "MVP read expenses" on public.expenses;
 drop policy if exists "MVP write expenses" on public.expenses;
 drop policy if exists "MVP read rent payments" on public.rent_payments;
 drop policy if exists "MVP write rent payments" on public.rent_payments;
+drop policy if exists "MVP read rent receipts" on public.rent_receipts;
+drop policy if exists "MVP write rent receipts" on public.rent_receipts;
 drop policy if exists "MVP read tenant documents" on public.tenant_documents;
 drop policy if exists "MVP write tenant documents" on public.tenant_documents;
 
@@ -805,6 +1004,15 @@ create policy "Members read rent payments" on public.rent_payments for select us
 create policy "Owner staff write rent payments" on public.rent_payments for insert with check (public.can_write_hostel_data(hostel_id));
 create policy "Owner staff update rent payments" on public.rent_payments for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
 create policy "Owners delete rent payments" on public.rent_payments for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read rent receipts" on public.rent_receipts;
+drop policy if exists "Owner staff write rent receipts" on public.rent_receipts;
+drop policy if exists "Owner staff update rent receipts" on public.rent_receipts;
+drop policy if exists "Owners delete rent receipts" on public.rent_receipts;
+create policy "Members read rent receipts" on public.rent_receipts for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write rent receipts" on public.rent_receipts for insert with check (public.can_write_hostel_data(hostel_id));
+create policy "Owner staff update rent receipts" on public.rent_receipts for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
+create policy "Owners delete rent receipts" on public.rent_receipts for delete using (public.is_hostel_owner(hostel_id));
 
 drop policy if exists "Members read tenant documents" on public.tenant_documents;
 drop policy if exists "Owner staff write tenant documents" on public.tenant_documents;

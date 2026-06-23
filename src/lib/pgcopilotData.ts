@@ -2,6 +2,7 @@ import { isSupabaseConfigured, supabase } from './supabase';
 
 export type BedStatus = 'Occupied' | 'Vacant' | 'Reserved' | 'Maintenance';
 export type RentStatus = 'Paid' | 'Partial' | 'Pending';
+export type PaymentMode = 'Cash' | 'UPI' | 'Bank Transfer';
 export type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
 export type UserRole = 'Owner' | 'Staff';
 
@@ -50,6 +51,30 @@ export type Expense = {
   tone: Tone;
 };
 
+export type RentReceipt = {
+  id: string;
+  receiptNumber: string;
+  paymentDate: string;
+  amount: number;
+  paymentMode: PaymentMode;
+  notes?: string;
+};
+
+export type RentBill = {
+  id: string;
+  tenantId: string;
+  tenantName: string;
+  room: string;
+  amount: number;
+  paidAmount: number;
+  pendingAmount: number;
+  dueDate: string;
+  rentMonth: string;
+  status: RentStatus;
+  paymentMode?: PaymentMode;
+  receipts: RentReceipt[];
+};
+
 export type PgMasterData = {
   hostelId?: string;
   selectedHostelId?: string;
@@ -62,6 +87,7 @@ export type PgMasterData = {
   tenants: Tenant[];
   expenses: Expense[];
   assignableBeds?: string[];
+  rentBills?: RentBill[];
 };
 
 export type LoadPgMasterResult = {
@@ -94,6 +120,13 @@ export type TenantDocumentInput = {
   uri: string;
   name: string;
   mimeType?: string;
+};
+
+export type RecordRentPaymentInput = {
+  rentPaymentId: string;
+  amount: number;
+  paymentMode: PaymentMode;
+  notes?: string;
 };
 
 export type HostelSetupInput = {
@@ -140,6 +173,7 @@ export const fallbackData: PgMasterData = {
     { label: 'Electricity', amount: 28500, icon: 'lightning-bolt-outline', tone: 'blue' },
     { label: 'Internet & utilities', amount: 24500, icon: 'wifi', tone: 'green' },
   ],
+  rentBills: [],
 };
 
 const emptyHostelData: PgMasterData = {
@@ -151,6 +185,7 @@ const emptyHostelData: PgMasterData = {
   tenants: [],
   expenses: [],
   assignableBeds: [],
+  rentBills: [],
 };
 
 export function buildSummary(data: PgMasterData) {
@@ -165,6 +200,9 @@ export function buildSummary(data: PgMasterData) {
     .filter((tenant) => tenant.status !== 'Paid')
     .reduce((sum, tenant) => sum + tenant.rent, 0);
   const collectedRent = expectedRent - pendingRent;
+  const billedRent = data.rentBills?.reduce((sum, bill) => sum + bill.amount, 0) ?? expectedRent;
+  const paidRent = data.rentBills?.reduce((sum, bill) => sum + bill.paidAmount, 0) ?? collectedRent;
+  const unpaidRent = data.rentBills?.reduce((sum, bill) => sum + bill.pendingAmount, 0) ?? pendingRent;
   const expensesTotal = data.expenses.reduce((sum, expense) => sum + expense.amount, 0);
   const foodExpense = data.expenses
     .filter((expense) => expense.label.toLowerCase().includes('food'))
@@ -177,15 +215,15 @@ export function buildSummary(data: PgMasterData) {
     reservedBeds,
     maintenanceBeds,
     occupancyRate: totalBeds ? Math.round((occupiedBeds / totalBeds) * 100) : 0,
-    expectedRent,
-    collectedRent,
-    pendingRent,
+    expectedRent: billedRent,
+    collectedRent: paidRent,
+    pendingRent: unpaidRent,
     activeTenants: data.tenants.length,
     newAdmissions: Math.min(6, data.tenants.length),
     upcomingVacates: 0,
-    income: Math.max(expectedRent, collectedRent),
+    income: Math.max(billedRent, paidRent),
     expensesTotal,
-    profit: Math.max(expectedRent, collectedRent) - expensesTotal,
+    profit: Math.max(billedRent, paidRent) - expensesTotal,
     foodExpense,
     foodResidents: Math.max(occupiedBeds, data.tenants.length),
   };
@@ -332,7 +370,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
   const role = currentHostel?.role ?? 'Owner';
   await supabase.rpc('expire_reserved_beds', { target_hostel_id: hostel.id });
 
-  const [roomsResult, tenantsResult, expensesResult] = await Promise.all([
+  const [roomsResult, tenantsResult, expensesResult, rentPaymentsResult] = await Promise.all([
     supabase
       .from('rooms')
       .select('id,room_number,floor,room_type,beds(id,bed_number,status)')
@@ -349,13 +387,18 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       .select('id,label,category,amount')
       .eq('hostel_id', hostel.id)
       .order('created_at', { ascending: false }),
+    supabase
+      .from('rent_payments')
+      .select('id,tenant_id,rent_month,amount,paid_amount,due_date,status,payment_mode,rent_receipts(id,receipt_number,payment_date,amount,payment_mode,notes),tenants(full_name,beds(bed_number))')
+      .eq('hostel_id', hostel.id)
+      .order('due_date', { ascending: false }),
   ]);
 
-  if (roomsResult.error || tenantsResult.error || expensesResult.error) {
+  if (roomsResult.error || tenantsResult.error || expensesResult.error || rentPaymentsResult.error) {
     return {
       data: fallbackData,
       source: 'demo',
-      error: roomsResult.error?.message || tenantsResult.error?.message || expensesResult.error?.message,
+      error: roomsResult.error?.message || tenantsResult.error?.message || expensesResult.error?.message || rentPaymentsResult.error?.message,
     };
   }
 
@@ -408,6 +451,35 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
     tone: expense.category === 'Food' ? 'orange' : expense.category === 'Salary' ? 'purple' : expense.category === 'Utilities' ? 'blue' : 'green',
   }));
 
+  const rentBills: RentBill[] = (rentPaymentsResult.data ?? []).map((bill: any) => {
+    const amount = Number(bill.amount ?? 0);
+    const paidAmount = Number(bill.paid_amount ?? 0);
+    const tenant = Array.isArray(bill.tenants) ? bill.tenants[0] : bill.tenants;
+    return {
+      id: bill.id,
+      tenantId: bill.tenant_id,
+      tenantName: tenant?.full_name ?? 'Tenant',
+      room: tenant?.beds?.bed_number ?? 'Unassigned',
+      amount,
+      paidAmount,
+      pendingAmount: Math.max(amount - paidAmount, 0),
+      dueDate: bill.due_date,
+      rentMonth: bill.rent_month,
+      status: normaliseRentStatus(bill.status),
+      paymentMode: bill.payment_mode || undefined,
+      receipts: [...(bill.rent_receipts ?? [])]
+        .sort((a, b) => String(b.payment_date).localeCompare(String(a.payment_date)))
+        .map((receipt: any) => ({
+          id: receipt.id,
+          receiptNumber: receipt.receipt_number,
+          paymentDate: receipt.payment_date,
+          amount: Number(receipt.amount ?? 0),
+          paymentMode: receipt.payment_mode,
+          notes: receipt.notes ?? undefined,
+        })),
+    };
+  });
+
   return {
     data: {
       hostelId: hostel.id,
@@ -421,6 +493,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       tenants,
       expenses,
       assignableBeds,
+      rentBills,
     },
     source: 'supabase',
   };
@@ -549,4 +622,36 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
 
   const refreshed = await loadPgMasterData(currentData.hostelId);
   return refreshed.data;
+}
+
+export async function generateMonthlyRent(currentData: PgMasterData, rentMonth = new Date().toISOString().slice(0, 10)) {
+  if (!isSupabaseConfigured || !supabase || !currentData.hostelId) {
+    return { data: currentData, generatedCount: 0 };
+  }
+
+  const { data, error } = await supabase.rpc('generate_monthly_rent', {
+    target_hostel_id: currentData.hostelId,
+    target_month: rentMonth,
+  });
+
+  if (error) throw new Error(error.message);
+  const refreshed = await loadPgMasterData(currentData.hostelId);
+  return { data: refreshed.data, generatedCount: Number(data ?? 0) };
+}
+
+export async function recordRentPayment(input: RecordRentPaymentInput, currentData: PgMasterData) {
+  if (!isSupabaseConfigured || !supabase || !currentData.hostelId) {
+    throw new Error('Live Supabase setup is required to record payments.');
+  }
+
+  const { data: receipt, error } = await supabase.rpc('record_rent_payment', {
+    target_rent_payment_id: input.rentPaymentId,
+    payment_amount: input.amount,
+    payment_mode_value: input.paymentMode,
+    payment_notes: input.notes || null,
+  });
+
+  if (error) throw new Error(error.message);
+  const refreshed = await loadPgMasterData(currentData.hostelId);
+  return { data: refreshed.data, receipt: receipt as any };
 }
