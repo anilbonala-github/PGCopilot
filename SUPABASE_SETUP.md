@@ -45,6 +45,27 @@ Module 2 multi-hostel support is included:
 - Existing rows are backfilled where possible from the parent hostel
 - Owner and Staff users only see assigned hostel data through RLS
 
+Module 3 RLS is included:
+
+- Users can read only their assigned hostels
+- Users can read/write only tenants, payments, expenses, rooms, and beds for assigned hostels
+- Reports are protected because they are calculated from RLS-protected tenants, payments, rooms, beds, and expenses
+- Only Owners can delete hostel-scoped records
+- Tenant document metadata is protected by RLS
+- Supabase Storage bucket `tenant-documents` is private and protected by hostel membership policies
+
+Tenant document files must use this storage path format:
+
+```text
+<hostel_id>/<tenant_id>/<file-name>
+```
+
+Example:
+
+```text
+5a0c...hostel-uuid/88cb...tenant-uuid/aadhaar-front.jpg
+```
+
 ## 3. Add App Keys
 
 Use only the anon public key in the app.

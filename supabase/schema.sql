@@ -140,6 +140,24 @@ create table if not exists public.rent_payments (
 alter table public.rent_payments add column if not exists owner_id uuid references auth.users(id) on delete set null;
 alter table public.rent_payments add column if not exists created_by uuid references auth.users(id) on delete set null;
 
+create table if not exists public.tenant_documents (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
+  hostel_id uuid not null references public.hostels(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  bucket_id text not null default 'tenant-documents',
+  storage_path text not null,
+  document_type text not null default 'Other' check (document_type in ('Aadhaar Front', 'Aadhaar Back', 'Photo', 'Employee ID', 'Student ID', 'Agreement', 'Other')),
+  file_name text,
+  mime_type text,
+  created_at timestamptz not null default now(),
+  unique (bucket_id, storage_path)
+);
+
+alter table public.tenant_documents add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.tenant_documents add column if not exists created_by uuid references auth.users(id) on delete set null;
+
 create index if not exists hostels_owner_id_idx on public.hostels(owner_id);
 create index if not exists hostel_members_user_id_idx on public.hostel_members(user_id);
 create index if not exists hostel_members_hostel_id_idx on public.hostel_members(hostel_id);
@@ -149,6 +167,8 @@ create index if not exists beds_hostel_id_idx on public.beds(hostel_id);
 create index if not exists tenants_hostel_id_idx on public.tenants(hostel_id);
 create index if not exists expenses_hostel_id_idx on public.expenses(hostel_id);
 create index if not exists rent_payments_hostel_id_idx on public.rent_payments(hostel_id);
+create index if not exists tenant_documents_hostel_id_idx on public.tenant_documents(hostel_id);
+create index if not exists tenant_documents_tenant_id_idx on public.tenant_documents(tenant_id);
 
 create or replace function public.normalized_phone(value text)
 returns text
@@ -224,6 +244,44 @@ as $$
       and hm.role in ('Owner', 'Staff')
       and hm.status = 'Active'
   );
+$$;
+
+create or replace function public.storage_path_hostel_id(object_name text)
+returns uuid
+language plpgsql
+stable
+as $$
+declare
+  first_folder text;
+begin
+  first_folder := split_part(object_name, '/', 1);
+  if first_folder = '' then
+    return null;
+  end if;
+  return first_folder::uuid;
+exception
+  when invalid_text_representation then
+    return null;
+end;
+$$;
+
+create or replace function public.storage_path_tenant_id(object_name text)
+returns uuid
+language plpgsql
+stable
+as $$
+declare
+  second_folder text;
+begin
+  second_folder := split_part(object_name, '/', 2);
+  if second_folder = '' then
+    return null;
+  end if;
+  return second_folder::uuid;
+exception
+  when invalid_text_representation then
+    return null;
+end;
 $$;
 
 create or replace function public.apply_hostel_creator_fields()
@@ -302,6 +360,11 @@ create trigger before_rent_payments_insert_audit_fields
 before insert on public.rent_payments
 for each row execute function public.apply_hostel_audit_fields();
 
+drop trigger if exists before_tenant_documents_insert_audit_fields on public.tenant_documents;
+create trigger before_tenant_documents_insert_audit_fields
+before insert on public.tenant_documents
+for each row execute function public.apply_hostel_audit_fields();
+
 update public.hostels
 set owner_id = coalesce(owner_id, created_by),
     created_by = coalesce(created_by, owner_id)
@@ -355,6 +418,13 @@ set owner_id = coalesce(rp.owner_id, h.owner_id),
 from public.hostels h
 where rp.hostel_id = h.id
   and (rp.owner_id is null or rp.created_by is null);
+
+update public.tenant_documents td
+set owner_id = coalesce(td.owner_id, h.owner_id),
+    created_by = coalesce(td.created_by, h.owner_id)
+from public.hostels h
+where td.hostel_id = h.id
+  and (td.owner_id is null or td.created_by is null);
 
 create or replace function public.sync_new_auth_user()
 returns trigger
@@ -464,6 +534,20 @@ alter table public.beds enable row level security;
 alter table public.tenants enable row level security;
 alter table public.expenses enable row level security;
 alter table public.rent_payments enable row level security;
+alter table public.tenant_documents enable row level security;
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'tenant-documents',
+  'tenant-documents',
+  false,
+  10485760,
+  array['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+)
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists "MVP read hostels" on public.hostels;
 drop policy if exists "MVP write hostels" on public.hostels;
@@ -477,6 +561,8 @@ drop policy if exists "MVP read expenses" on public.expenses;
 drop policy if exists "MVP write expenses" on public.expenses;
 drop policy if exists "MVP read rent payments" on public.rent_payments;
 drop policy if exists "MVP write rent payments" on public.rent_payments;
+drop policy if exists "MVP read tenant documents" on public.tenant_documents;
+drop policy if exists "MVP write tenant documents" on public.tenant_documents;
 
 drop policy if exists "Profiles are visible to owner" on public.profiles;
 drop policy if exists "Users update own profile" on public.profiles;
@@ -556,6 +642,85 @@ create policy "Members read rent payments" on public.rent_payments for select us
 create policy "Owner staff write rent payments" on public.rent_payments for insert with check (public.can_write_hostel_data(hostel_id));
 create policy "Owner staff update rent payments" on public.rent_payments for update using (public.can_write_hostel_data(hostel_id)) with check (public.can_write_hostel_data(hostel_id));
 create policy "Owners delete rent payments" on public.rent_payments for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read tenant documents" on public.tenant_documents;
+drop policy if exists "Owner staff write tenant documents" on public.tenant_documents;
+drop policy if exists "Owner staff update tenant documents" on public.tenant_documents;
+drop policy if exists "Owners delete tenant documents" on public.tenant_documents;
+create policy "Members read tenant documents" on public.tenant_documents
+  for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write tenant documents" on public.tenant_documents
+  for insert with check (
+    public.can_write_hostel_data(hostel_id)
+    and bucket_id = 'tenant-documents'
+    and public.storage_path_hostel_id(storage_path) = hostel_id
+    and public.storage_path_tenant_id(storage_path) = tenant_id
+    and exists (
+      select 1
+      from public.tenants t
+      where t.id = tenant_id
+        and t.hostel_id = tenant_documents.hostel_id
+    )
+  );
+create policy "Owner staff update tenant documents" on public.tenant_documents
+  for update using (public.can_write_hostel_data(hostel_id))
+  with check (
+    public.can_write_hostel_data(hostel_id)
+    and bucket_id = 'tenant-documents'
+    and public.storage_path_hostel_id(storage_path) = hostel_id
+    and public.storage_path_tenant_id(storage_path) = tenant_id
+    and exists (
+      select 1
+      from public.tenants t
+      where t.id = tenant_id
+        and t.hostel_id = tenant_documents.hostel_id
+    )
+  );
+create policy "Owners delete tenant documents" on public.tenant_documents
+  for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read tenant document files" on storage.objects;
+drop policy if exists "Owner staff upload tenant document files" on storage.objects;
+drop policy if exists "Owner staff update tenant document files" on storage.objects;
+drop policy if exists "Owners delete tenant document files" on storage.objects;
+create policy "Members read tenant document files" on storage.objects
+  for select using (
+    bucket_id = 'tenant-documents'
+    and public.is_hostel_member(public.storage_path_hostel_id(name))
+  );
+create policy "Owner staff upload tenant document files" on storage.objects
+  for insert with check (
+    bucket_id = 'tenant-documents'
+    and public.can_write_hostel_data(public.storage_path_hostel_id(name))
+    and exists (
+      select 1
+      from public.tenants t
+      where t.hostel_id = public.storage_path_hostel_id(name)
+        and t.id = public.storage_path_tenant_id(name)
+        and public.can_write_hostel_data(t.hostel_id)
+    )
+  );
+create policy "Owner staff update tenant document files" on storage.objects
+  for update using (
+    bucket_id = 'tenant-documents'
+    and public.can_write_hostel_data(public.storage_path_hostel_id(name))
+  )
+  with check (
+    bucket_id = 'tenant-documents'
+    and public.can_write_hostel_data(public.storage_path_hostel_id(name))
+    and exists (
+      select 1
+      from public.tenants t
+      where t.hostel_id = public.storage_path_hostel_id(name)
+        and t.id = public.storage_path_tenant_id(name)
+        and public.can_write_hostel_data(t.hostel_id)
+    )
+  );
+create policy "Owners delete tenant document files" on storage.objects
+  for delete using (
+    bucket_id = 'tenant-documents'
+    and public.is_hostel_owner(public.storage_path_hostel_id(name))
+  );
 
 -- Demo data is intentionally no longer inserted by this production schema.
 -- Create a hostel from the app after logging in with mobile OTP.
