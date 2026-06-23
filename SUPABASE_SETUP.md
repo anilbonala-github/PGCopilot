@@ -86,7 +86,26 @@ After the first hostel is created, owners can use the hostel name dropdown on th
 
 Staff can add/update hostel data, but delete policies are owner-only.
 
-## 7. Local Commands
+## 7. Optional Demo Admin Data
+
+Use this only when you want a fixed demo login with sample hostel data.
+
+1. In Supabase Authentication > Providers > Phone, add this test OTP pair:
+
+```text
+919123456789=123456
+```
+
+Supabase test phone numbers must be international format without spaces, dashes, or the `+` prefix.
+
+2. Login once in the app with mobile `9123456789` and OTP `123456`.
+3. Open Supabase > SQL Editor.
+4. Run `supabase/demo_seed.sql` from this repo.
+5. Logout and login again with `9123456789`.
+
+That test user will be mapped as `Owner` for the seeded `Greenview Men's PG` hostel, including rooms, beds, tenants, and expenses.
+
+## 8. Local Commands
 
 Web:
 
