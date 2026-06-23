@@ -66,6 +66,24 @@ Example:
 5a0c...hostel-uuid/88cb...tenant-uuid/aadhaar-front.jpg
 ```
 
+Module 4 tenant admission is included:
+
+- Full name
+- Mobile number
+- Emergency contact
+- Aadhaar number
+- Company / college
+- Joining date
+- Room / bed assignment
+- Monthly rent
+- Deposit amount
+- Food included
+- Rent due day
+- Status: Active or Vacated
+- Document uploads for tenant photo, Aadhaar front/back, employee ID, student ID, and agreement document
+
+Tenant document files are uploaded to the private `tenant-documents` Supabase Storage bucket, and metadata is stored in `tenant_documents`.
+
 ## 3. Add App Keys
 
 Use only the anon public key in the app.

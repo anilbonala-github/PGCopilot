@@ -98,6 +98,8 @@ create table if not exists public.tenants (
   monthly_rent numeric not null default 0,
   deposit_amount numeric not null default 0,
   food_included boolean not null default true,
+  rent_due_day integer not null default 5 check (rent_due_day between 1 and 31),
+  status text not null default 'Active' check (status in ('Active', 'Vacated')),
   notice_period_days integer not null default 30,
   rent_status text not null default 'Pending' check (rent_status in ('Paid', 'Partial', 'Pending')),
   is_active boolean not null default true,
@@ -106,6 +108,26 @@ create table if not exists public.tenants (
 
 alter table public.tenants add column if not exists owner_id uuid references auth.users(id) on delete set null;
 alter table public.tenants add column if not exists created_by uuid references auth.users(id) on delete set null;
+alter table public.tenants add column if not exists emergency_contact text;
+alter table public.tenants add column if not exists aadhaar_number text;
+alter table public.tenants add column if not exists company_college text;
+alter table public.tenants add column if not exists food_included boolean not null default true;
+alter table public.tenants add column if not exists rent_due_day integer not null default 5;
+alter table public.tenants add column if not exists status text not null default 'Active';
+
+do $$
+begin
+  alter table public.tenants add constraint tenants_rent_due_day_check check (rent_due_day between 1 and 31);
+exception
+  when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter table public.tenants add constraint tenants_status_check check (status in ('Active', 'Vacated'));
+exception
+  when duplicate_object then null;
+end $$;
 
 create table if not exists public.expenses (
   id uuid primary key default gen_random_uuid(),

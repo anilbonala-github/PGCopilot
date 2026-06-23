@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as DocumentPicker from 'expo-document-picker';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { Session } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
@@ -27,6 +28,8 @@ import {
   type HostelSetupInput,
   type NewTenantInput,
   type PgMasterData,
+  type TenantDocumentInput,
+  type TenantDocumentType,
 } from './src/lib/pgcopilotData';
 
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
@@ -460,6 +463,7 @@ function Tenants({ data, onAddTenant }: { data: PgMasterData; onAddTenant: (inpu
               <View style={styles.flex}>
                 <Text style={styles.tenantName}>{tenant.name}</Text>
                 <Text style={styles.activityCaption}>Room {tenant.room} · {tenant.mobile}</Text>
+                <Text style={styles.activityCaption}>{tenant.companyCollege || 'Company/college not added'} · {tenant.documentCount ?? 0} documents</Text>
               </View>
               <AppIcon name="chevron-right" size={20} color={colors.muted} />
             </View>
@@ -472,31 +476,103 @@ function Tenants({ data, onAddTenant }: { data: PgMasterData; onAddTenant: (inpu
   );
 }
 
+const tenantDocumentTypes: TenantDocumentType[] = [
+  'Tenant Photo',
+  'Aadhaar Front',
+  'Aadhaar Back',
+  'Employee ID',
+  'Student ID',
+  'Agreement Document',
+];
+
 function AddTenantModal({ visible, onClose, onSubmit }: { visible: boolean; onClose: () => void; onSubmit: (input: NewTenantInput) => Promise<void> }) {
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
+  const [emergencyContact, setEmergencyContact] = useState('');
+  const [aadhaarNumber, setAadhaarNumber] = useState('');
+  const [companyCollege, setCompanyCollege] = useState('');
+  const [joiningDate, setJoiningDate] = useState(new Date().toISOString().slice(0, 10));
   const [roomBed, setRoomBed] = useState('');
   const [rent, setRent] = useState('');
   const [deposit, setDeposit] = useState('');
+  const [foodIncluded, setFoodIncluded] = useState(true);
+  const [rentDueDay, setRentDueDay] = useState('5');
+  const [status, setStatus] = useState<'Active' | 'Vacated'>('Active');
+  const [documents, setDocuments] = useState<TenantDocumentInput[]>([]);
+  const [formError, setFormError] = useState<string | undefined>();
   const [saving, setSaving] = useState(false);
 
+  const resetForm = () => {
+    setName('');
+    setMobile('');
+    setEmergencyContact('');
+    setAadhaarNumber('');
+    setCompanyCollege('');
+    setJoiningDate(new Date().toISOString().slice(0, 10));
+    setRoomBed('');
+    setRent('');
+    setDeposit('');
+    setFoodIncluded(true);
+    setRentDueDay('5');
+    setStatus('Active');
+    setDocuments([]);
+    setFormError(undefined);
+  };
+
+  const pickDocument = async (type: TenantDocumentType) => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ['image/*', 'application/pdf'],
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setDocuments((current) => [
+      ...current.filter((document) => document.type !== type),
+      {
+        type,
+        uri: asset.uri,
+        name: asset.name || `${type}.file`,
+        mimeType: asset.mimeType,
+      },
+    ]);
+  };
+
   const handleSubmit = async () => {
-    if (!name.trim()) return;
+    if (!name.trim()) {
+      setFormError('Full name is required.');
+      return;
+    }
+
+    const dueDay = Number(rentDueDay || 5);
+    if (!Number.isFinite(dueDay) || dueDay < 1 || dueDay > 31) {
+      setFormError('Rent due date must be a day between 1 and 31.');
+      return;
+    }
+
     setSaving(true);
+    setFormError(undefined);
     try {
       await onSubmit({
         name: name.trim(),
         mobile: mobile.trim(),
+        emergencyContact: emergencyContact.trim(),
+        aadhaarNumber: aadhaarNumber.trim(),
+        companyCollege: companyCollege.trim(),
+        joiningDate: joiningDate.trim(),
         roomBed: roomBed.trim(),
         rent: Number(rent || 0),
         deposit: Number(deposit || 0),
+        foodIncluded,
+        rentDueDay: dueDay,
+        status,
+        documents,
       });
-      setName('');
-      setMobile('');
-      setRoomBed('');
-      setRent('');
-      setDeposit('');
+      resetForm();
       onClose();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Unable to save tenant admission.');
     } finally {
       setSaving(false);
     }
@@ -511,6 +587,7 @@ function AddTenantModal({ visible, onClose, onSubmit }: { visible: boolean; onCl
             <View><Text style={styles.modalTitle}>New admission</Text><Text style={styles.subtitle}>Add tenant details and assign a bed</Text></View>
             <TouchableOpacity onPress={onClose}><AppIcon name="close" size={23} color={colors.ink} /></TouchableOpacity>
           </View>
+          <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
           <View style={styles.formRow}>
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>FULL NAME</Text><TextInput placeholder="Tenant name" style={styles.fieldInput} value={name} onChangeText={setName} /></View>
           </View>
@@ -519,10 +596,58 @@ function AddTenantModal({ visible, onClose, onSubmit }: { visible: boolean; onCl
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>ROOM / BED</Text><TextInput placeholder="101-C" style={styles.fieldInput} value={roomBed} onChangeText={setRoomBed} /></View>
           </View>
           <View style={styles.formRow}>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>EMERGENCY CONTACT</Text><TextInput placeholder="+91" style={styles.fieldInput} value={emergencyContact} onChangeText={setEmergencyContact} keyboardType="phone-pad" /></View>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>AADHAAR NUMBER</Text><TextInput placeholder="xxxx xxxx xxxx" style={styles.fieldInput} value={aadhaarNumber} onChangeText={setAadhaarNumber} keyboardType="numeric" /></View>
+          </View>
+          <View style={styles.formRow}>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>COMPANY / COLLEGE</Text><TextInput placeholder="Company or college" style={styles.fieldInput} value={companyCollege} onChangeText={setCompanyCollege} /></View>
+          </View>
+          <View style={styles.formRow}>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>JOINING DATE</Text><TextInput placeholder="YYYY-MM-DD" style={styles.fieldInput} value={joiningDate} onChangeText={setJoiningDate} /></View>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>RENT DUE DATE</Text><TextInput placeholder="5" style={styles.fieldInput} value={rentDueDay} onChangeText={setRentDueDay} keyboardType="numeric" /></View>
+          </View>
+          <View style={styles.formRow}>
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>MONTHLY RENT</Text><TextInput placeholder="₹ 0" style={styles.fieldInput} value={rent} onChangeText={setRent} keyboardType="numeric" /></View>
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>DEPOSIT</Text><TextInput placeholder="₹ 0" style={styles.fieldInput} value={deposit} onChangeText={setDeposit} keyboardType="numeric" /></View>
           </View>
+          <View style={styles.toggleRow}>
+            <Text style={styles.tenantName}>Food included</Text>
+            <View style={styles.segmentRow}>
+              {(['Yes', 'No'] as const).map((item) => (
+                <TouchableOpacity key={item} style={[styles.segmentChip, (foodIncluded ? item === 'Yes' : item === 'No') && styles.segmentChipActive]} onPress={() => setFoodIncluded(item === 'Yes')}>
+                  <Text style={[styles.segmentText, (foodIncluded ? item === 'Yes' : item === 'No') && styles.segmentTextActive]}>{item}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+          <View style={styles.toggleRow}>
+            <Text style={styles.tenantName}>Status</Text>
+            <View style={styles.segmentRow}>
+              {(['Active', 'Vacated'] as const).map((item) => (
+                <TouchableOpacity key={item} style={[styles.segmentChip, status === item && styles.segmentChipActive]} onPress={() => setStatus(item)}>
+                  <Text style={[styles.segmentText, status === item && styles.segmentTextActive]}>{item}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+          <SectionTitle title="Document uploads" />
+          <View style={styles.documentGrid}>
+            {tenantDocumentTypes.map((type) => {
+              const document = documents.find((item) => item.type === type);
+              return (
+                <TouchableOpacity key={type} style={styles.documentButton} onPress={() => pickDocument(type)}>
+                  <AppIcon name={document ? 'check-circle-outline' : 'upload-outline'} size={18} color={document ? colors.green : colors.muted} />
+                  <View style={styles.flex}>
+                    <Text style={styles.documentTitle}>{type}</Text>
+                    <Text style={styles.activityCaption}>{document?.name ?? 'Tap to upload'}</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          {formError ? <Text style={styles.authError}>{formError}</Text> : null}
           <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit} disabled={saving}><Text style={styles.primaryButtonText}>{saving ? 'Saving...' : 'Save admission'}</Text></TouchableOpacity>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -556,7 +681,7 @@ function Rent({ data }: { data: PgMasterData }) {
             <View style={[styles.avatar, { backgroundColor: tenant.tone }]}><Text style={styles.avatarText}>{tenant.initials}</Text></View>
             <View style={styles.flex}>
               <Text style={styles.tenantName}>{tenant.name}</Text>
-              <Text style={styles.activityCaption}>Room {tenant.room} · Due 5 Jun</Text>
+              <Text style={styles.activityCaption}>Room {tenant.room} · Due day {tenant.rentDueDay ?? 5}</Text>
             </View>
             <View style={styles.alignEnd}>
               <Text style={styles.rentAmount}>{money(tenant.rent)}</Text>
@@ -1097,6 +1222,7 @@ const styles = StyleSheet.create({
   fab: { position: 'absolute', right: 21, bottom: 18, width: 55, height: 55, borderRadius: 28, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 8, elevation: 4 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: colors.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 28 },
+  modalScroll: { maxHeight: Platform.OS === 'web' ? 560 : 520 },
   modalHandle: { width: 42, height: 4, backgroundColor: '#D1D8D5', borderRadius: 2, alignSelf: 'center', marginBottom: 17 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   modalTitle: { color: colors.ink, fontSize: 20, fontWeight: '800' },
@@ -1108,6 +1234,15 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
   secondaryButton: { height: 44, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderWidth: 1, borderColor: colors.line },
   secondaryButtonText: { color: colors.ink, fontWeight: '800', fontSize: 13 },
+  toggleRow: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  segmentRow: { flexDirection: 'row', gap: 7 },
+  segmentChip: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: 16, backgroundColor: '#EDF0EE' },
+  segmentChipActive: { backgroundColor: colors.green },
+  segmentText: { color: colors.muted, fontSize: 11, fontWeight: '800' },
+  segmentTextActive: { color: '#FFF' },
+  documentGrid: { gap: 8, marginBottom: 8 },
+  documentButton: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  documentTitle: { color: colors.ink, fontSize: 12, fontWeight: '800' },
   rentHero: { backgroundColor: colors.ink, padding: 18, borderRadius: 16, marginBottom: 15 },
   rentHeroValue: { color: '#FFF', fontSize: 29, fontWeight: '800', marginTop: 8 },
   rentHeroBottom: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },

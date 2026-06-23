@@ -27,7 +27,16 @@ export type Tenant = {
   name: string;
   room: string;
   mobile: string;
+  emergencyContact?: string;
+  aadhaarNumber?: string;
+  companyCollege?: string;
+  joiningDate?: string;
   rent: number;
+  deposit?: number;
+  foodIncluded?: boolean;
+  rentDueDay?: number;
+  admissionStatus?: 'Active' | 'Vacated';
+  documentCount?: number;
   status: RentStatus;
   tone: string;
 };
@@ -63,9 +72,26 @@ export type LoadPgMasterResult = {
 export type NewTenantInput = {
   name: string;
   mobile: string;
+  emergencyContact: string;
+  aadhaarNumber: string;
+  companyCollege: string;
+  joiningDate: string;
   roomBed: string;
   rent: number;
   deposit: number;
+  foodIncluded: boolean;
+  rentDueDay: number;
+  status: 'Active' | 'Vacated';
+  documents: TenantDocumentInput[];
+};
+
+export type TenantDocumentType = 'Tenant Photo' | 'Aadhaar Front' | 'Aadhaar Back' | 'Employee ID' | 'Student ID' | 'Agreement Document';
+
+export type TenantDocumentInput = {
+  type: TenantDocumentType;
+  uri: string;
+  name: string;
+  mimeType?: string;
 };
 
 export type HostelSetupInput = {
@@ -186,6 +212,53 @@ function normalisePhone(phone: string) {
   return digits.startsWith('91') ? `+${digits}` : phone.trim();
 }
 
+function documentTypeForDb(type: TenantDocumentType) {
+  if (type === 'Tenant Photo') return 'Photo';
+  if (type === 'Agreement Document') return 'Agreement';
+  return type;
+}
+
+function slugFileName(name: string) {
+  return name
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || `document-${Date.now()}`;
+}
+
+async function uploadTenantDocuments(input: NewTenantInput, tenantId: string, currentData: PgMasterData, userId?: string) {
+  if (!supabase || !currentData.hostelId || input.documents.length === 0) return;
+
+  for (const document of input.documents) {
+    const fileName = `${Date.now()}-${slugFileName(document.name)}`;
+    const storagePath = `${currentData.hostelId}/${tenantId}/${fileName}`;
+    const response = await fetch(document.uri);
+    const blob = await response.blob();
+    const uploadResult = await supabase.storage
+      .from('tenant-documents')
+      .upload(storagePath, blob, {
+        contentType: document.mimeType || 'application/octet-stream',
+        upsert: true,
+      });
+
+    if (uploadResult.error) throw new Error(uploadResult.error.message);
+
+    const { error } = await supabase.from('tenant_documents').insert({
+      hostel_id: currentData.hostelId,
+      owner_id: currentData.ownerId,
+      created_by: userId,
+      tenant_id: tenantId,
+      bucket_id: 'tenant-documents',
+      storage_path: storagePath,
+      document_type: documentTypeForDb(document.type),
+      file_name: document.name,
+      mime_type: document.mimeType || null,
+    });
+
+    if (error) throw new Error(error.message);
+  }
+}
+
 async function currentUserId() {
   if (!supabase) return undefined;
   const { data } = await supabase.auth.getUser();
@@ -262,7 +335,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       .order('room_number', { ascending: true }),
     supabase
       .from('tenants')
-      .select('id,full_name,mobile_number,monthly_rent,rent_status,beds(bed_number,rooms(room_number))')
+      .select('id,full_name,mobile_number,emergency_contact,aadhaar_number,company_college,joining_date,monthly_rent,deposit_amount,food_included,rent_due_day,status,rent_status,tenant_documents(id),beds(bed_number,rooms(room_number))')
       .eq('hostel_id', hostel.id)
       .eq('is_active', true)
       .order('created_at', { ascending: false }),
@@ -299,7 +372,16 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       name: tenant.full_name,
       room: bedNumber,
       mobile: tenant.mobile_number ?? '',
+      emergencyContact: tenant.emergency_contact ?? '',
+      aadhaarNumber: tenant.aadhaar_number ?? '',
+      companyCollege: tenant.company_college ?? '',
+      joiningDate: tenant.joining_date ?? '',
       rent: Number(tenant.monthly_rent ?? 0),
+      deposit: Number(tenant.deposit_amount ?? 0),
+      foodIncluded: Boolean(tenant.food_included),
+      rentDueDay: Number(tenant.rent_due_day ?? 5),
+      admissionStatus: tenant.status === 'Vacated' ? 'Vacated' : 'Active',
+      documentCount: tenant.tenant_documents?.length ?? 0,
       status: normaliseRentStatus(tenant.rent_status),
       tone: tenantTones[index % tenantTones.length],
     };
@@ -389,7 +471,16 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
           name: input.name,
           room: input.roomBed || 'Unassigned',
           mobile: input.mobile,
+          emergencyContact: input.emergencyContact,
+          aadhaarNumber: input.aadhaarNumber,
+          companyCollege: input.companyCollege,
+          joiningDate: input.joiningDate,
           rent: input.rent,
+          deposit: input.deposit,
+          foodIncluded: input.foodIncluded,
+          rentDueDay: input.rentDueDay,
+          admissionStatus: input.status,
+          documentCount: input.documents.length,
           status: 'Pending' as RentStatus,
           tone: tenantTones[currentData.tenants.length % tenantTones.length],
         },
@@ -410,23 +501,34 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
     bedId = (bed as any)?.id ?? null;
   }
 
-  const { error } = await supabase.from('tenants').insert({
+  const { data: tenant, error } = await supabase.from('tenants').insert({
     hostel_id: currentData.hostelId,
     owner_id: currentData.ownerId,
     created_by: userId,
     bed_id: bedId,
     full_name: input.name,
     mobile_number: input.mobile,
+    emergency_contact: input.emergencyContact || null,
+    aadhaar_number: input.aadhaarNumber || null,
+    company_college: input.companyCollege || null,
+    joining_date: input.joiningDate || new Date().toISOString().slice(0, 10),
     monthly_rent: input.rent,
     deposit_amount: input.deposit,
+    food_included: input.foodIncluded,
+    rent_due_day: input.rentDueDay,
+    status: input.status,
     rent_status: 'Pending',
-    joining_date: new Date().toISOString().slice(0, 10),
-    is_active: true,
-  });
+    is_active: input.status === 'Active',
+  }).select('id').single();
 
   if (error) throw new Error(error.message);
+  const tenantId = (tenant as any)?.id;
 
-  if (bedId) {
+  if (tenantId) {
+    await uploadTenantDocuments(input, tenantId, currentData, userId);
+  }
+
+  if (bedId && input.status === 'Active') {
     await supabase.from('beds').update({ status: 'Occupied' }).eq('id', bedId);
   }
 
