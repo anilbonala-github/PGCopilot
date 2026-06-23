@@ -117,7 +117,24 @@ function SyncBanner({ loading, source, error }: { loading: boolean; source: 'sup
   );
 }
 
-function Dashboard({ onNavigate, data, loading, source, error }: { onNavigate: (tab: Tab) => void; data: PgMasterData; loading: boolean; source: 'supabase' | 'demo'; error?: string }) {
+function Dashboard({
+  onNavigate,
+  data,
+  loading,
+  source,
+  error,
+  onSelectHostel,
+  onCreateHostel,
+}: {
+  onNavigate: (tab: Tab) => void;
+  data: PgMasterData;
+  loading: boolean;
+  source: 'supabase' | 'demo';
+  error?: string;
+  onSelectHostel: (hostelId: string) => Promise<void>;
+  onCreateHostel: (input: HostelSetupInput) => Promise<void>;
+}) {
+  const [hostelPickerOpen, setHostelPickerOpen] = useState(false);
   const summary = buildSummary(data);
   const metrics = [
     { label: 'Total beds', value: String(summary.totalBeds), icon: 'bed-outline' as IconName, tone: 'green' as Tone },
@@ -126,34 +143,35 @@ function Dashboard({ onNavigate, data, loading, source, error }: { onNavigate: (
     { label: 'Occupancy', value: `${summary.occupancyRate}%`, icon: 'chart-donut' as IconName, tone: 'purple' as Tone },
   ];
   return (
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-      <SyncBanner loading={loading} source={source} error={error} />
-      <View style={styles.welcomeHeader}>
-        <View>
-          <Text style={styles.eyebrow}>TUESDAY, 2 JUNE</Text>
-          <Text style={styles.greeting}>Good evening, Anil</Text>
-          <View style={styles.propertyRow}>
-            <Text style={styles.propertyName}>{data.propertyName}</Text>
-            <AppIcon name="chevron-down" size={18} color={colors.green} />
+    <>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <SyncBanner loading={loading} source={source} error={error} />
+        <View style={styles.welcomeHeader}>
+          <View>
+            <Text style={styles.eyebrow}>TUESDAY, 2 JUNE</Text>
+            <Text style={styles.greeting}>Good evening, Anil</Text>
+            <TouchableOpacity style={styles.propertyRow} onPress={() => setHostelPickerOpen(true)}>
+              <Text style={styles.propertyName}>{data.propertyName}</Text>
+              <AppIcon name="chevron-down" size={18} color={colors.green} />
+            </TouchableOpacity>
           </View>
+          <TouchableOpacity style={styles.iconButton}>
+            <AppIcon name="bell-outline" size={22} color={colors.ink} />
+            <View style={styles.notificationDot} />
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity style={styles.iconButton}>
-          <AppIcon name="bell-outline" size={22} color={colors.ink} />
-          <View style={styles.notificationDot} />
-        </TouchableOpacity>
-      </View>
 
-      <View style={styles.metricsGrid}>
-        {metrics.map((item) => (
-          <View key={item.label} style={styles.metricCard}>
-            <View style={[styles.miniIcon, { backgroundColor: item.tone === 'green' ? colors.paleGreen : item.tone === 'blue' ? colors.paleBlue : item.tone === 'orange' ? colors.paleOrange : colors.palePurple }]}>
-              <AppIcon name={item.icon} size={18} color={colors[item.tone]} />
+        <View style={styles.metricsGrid}>
+          {metrics.map((item) => (
+            <View key={item.label} style={styles.metricCard}>
+              <View style={[styles.miniIcon, { backgroundColor: item.tone === 'green' ? colors.paleGreen : item.tone === 'blue' ? colors.paleBlue : item.tone === 'orange' ? colors.paleOrange : colors.palePurple }]}>
+                <AppIcon name={item.icon} size={18} color={colors[item.tone]} />
+              </View>
+              <Text style={styles.metricValue}>{item.value}</Text>
+              <Text style={styles.metricLabel}>{item.label}</Text>
             </View>
-            <Text style={styles.metricValue}>{item.value}</Text>
-            <Text style={styles.metricLabel}>{item.label}</Text>
-          </View>
-        ))}
-      </View>
+          ))}
+        </View>
 
       <View style={styles.collectionCard}>
         <View style={styles.collectionTop}>
@@ -226,7 +244,123 @@ function Dashboard({ onNavigate, data, loading, source, error }: { onNavigate: (
         <Activity icon="account-plus-outline" tone="blue" title={`${summary.newAdmissions} active admissions`} caption={`${data.tenants.length} tenants available`} />
         <Activity icon="file-document-outline" tone="orange" title={`${data.expenses[0]?.label ?? 'Expense'} added`} caption="Current month" value={`- ${money(data.expenses[0]?.amount ?? 0)}`} last />
       </View>
-    </ScrollView>
+      </ScrollView>
+      <HostelSwitcherModal
+        visible={hostelPickerOpen}
+        data={data}
+        onClose={() => setHostelPickerOpen(false)}
+        onSelectHostel={onSelectHostel}
+        onCreateHostel={onCreateHostel}
+      />
+    </>
+  );
+}
+
+function HostelSwitcherModal({
+  visible,
+  data,
+  onClose,
+  onSelectHostel,
+  onCreateHostel,
+}: {
+  visible: boolean;
+  data: PgMasterData;
+  onClose: () => void;
+  onSelectHostel: (hostelId: string) => Promise<void>;
+  onCreateHostel: (input: HostelSetupInput) => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
+  const [contactNumber, setContactNumber] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const hostels = data.hostels ?? [];
+  const selectedHostelId = data.selectedHostelId ?? data.hostelId;
+  const canCreateHostel = data.currentUserRole === 'Owner';
+
+  const handleCreate = async () => {
+    if (!name.trim() || !address.trim()) {
+      setError('Hostel name and address are required.');
+      return;
+    }
+
+    setSaving(true);
+    setError(undefined);
+    try {
+      await onCreateHostel({
+        name: name.trim(),
+        address: address.trim(),
+        contactNumber: contactNumber.trim(),
+      });
+      setName('');
+      setAddress('');
+      setContactNumber('');
+      onClose();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : 'Unable to create hostel.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSelect = async (hostelId: string) => {
+    await onSelectHostel(hostelId);
+    onClose();
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <View style={styles.modalHeader}>
+            <View>
+              <Text style={styles.modalTitle}>Switch hostel</Text>
+              <Text style={styles.subtitle}>Each hostel has isolated rooms, beds, tenants and reports.</Text>
+            </View>
+            <TouchableOpacity onPress={onClose}><AppIcon name="close" size={23} color={colors.ink} /></TouchableOpacity>
+          </View>
+
+          <SectionTitle title="Your hostels" />
+          <View style={styles.listCard}>
+            {hostels.map((hostel, index) => (
+              <TouchableOpacity
+                key={hostel.id}
+                style={[styles.hostelOption, index !== hostels.length - 1 && styles.divider, selectedHostelId === hostel.id && styles.hostelOptionActive]}
+                onPress={() => handleSelect(hostel.id)}
+              >
+                <View style={styles.flex}>
+                  <Text style={styles.tenantName}>{hostel.name}</Text>
+                  <Text style={styles.activityCaption}>{hostel.address}</Text>
+                </View>
+                <Chip label={hostel.role} tone={hostel.role === 'Owner' ? 'green' : 'purple'} />
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {canCreateHostel ? (
+            <>
+              <SectionTitle title="Add another hostel" />
+              <View style={styles.hostelCreateBox}>
+                <View style={styles.formRow}>
+                  <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>HOSTEL NAME</Text><TextInput placeholder="Green Home Boys Hostel" style={styles.fieldInput} value={name} onChangeText={setName} /></View>
+                </View>
+                <View style={styles.formRow}>
+                  <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>ADDRESS</Text><TextInput placeholder="Area, city" style={styles.fieldInput} value={address} onChangeText={setAddress} /></View>
+                </View>
+                <View style={styles.formRow}>
+                  <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>CONTACT NUMBER</Text><TextInput placeholder="Optional" style={styles.fieldInput} value={contactNumber} onChangeText={setContactNumber} keyboardType="phone-pad" /></View>
+                </View>
+                {error ? <Text style={styles.authError}>{error}</Text> : null}
+                <TouchableOpacity style={styles.primaryButton} onPress={handleCreate} disabled={saving}><Text style={styles.primaryButtonText}>{saving ? 'Creating...' : 'Create and switch'}</Text></TouchableOpacity>
+              </View>
+            </>
+          ) : (
+            <Text style={styles.loginSecurityHint}>Staff can switch only between hostels assigned by an owner.</Text>
+          )}
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -714,17 +848,19 @@ export default function App() {
   const [loadingData, setLoadingData] = useState(false);
   const [needsHostelSetup, setNeedsHostelSetup] = useState(false);
   const [savingHostel, setSavingHostel] = useState(false);
+  const [selectedHostelId, setSelectedHostelId] = useState<string | undefined>();
 
   const authenticated = demoMode || Boolean(session);
 
-  const refreshData = async () => {
+  const refreshData = async (hostelId = selectedHostelId) => {
     setLoadingData(true);
     try {
-      const result = await loadPgMasterData();
+      const result = await loadPgMasterData(hostelId);
       setPgData(result.data);
       setDataSource(result.source);
       setDataError(result.error);
       setNeedsHostelSetup(Boolean(result.needsHostelSetup));
+      setSelectedHostelId(result.data.selectedHostelId ?? result.data.hostelId);
     } finally {
       setLoadingData(false);
     }
@@ -752,6 +888,7 @@ export default function App() {
       } else {
         setPgData(fallbackData);
         setNeedsHostelSetup(false);
+        setSelectedHostelId(undefined);
       }
     });
 
@@ -812,6 +949,7 @@ export default function App() {
     setTab('Home');
     setPgData(fallbackData);
     setNeedsHostelSetup(false);
+    setSelectedHostelId(undefined);
   };
 
   const handleCreateHostel = async (input: HostelSetupInput) => {
@@ -820,6 +958,7 @@ export default function App() {
     try {
       const nextData = await createOwnerHostel(input);
       setPgData(nextData);
+      setSelectedHostelId(nextData.selectedHostelId ?? nextData.hostelId);
       setNeedsHostelSetup(false);
     } catch (error) {
       setDataError(error instanceof Error ? error.message : 'Unable to create hostel.');
@@ -832,12 +971,18 @@ export default function App() {
     await inviteStaff({ hostelId: pgData.hostelId, phone });
   };
 
+  const handleSelectHostel = async (hostelId: string) => {
+    setSelectedHostelId(hostelId);
+    setTab('Home');
+    await refreshData(hostelId);
+  };
+
   const content = useMemo(() => {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
     if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} />;
     if (tab === 'Rent') return <Rent data={pgData} />;
     if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onLogout={handleLogout} />;
-    return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} />;
+    return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} onSelectHostel={handleSelectHostel} onCreateHostel={handleCreateHostel} />;
   }, [tab, pgData, loadingData, dataSource, dataError]);
 
   if (!authReady) return <SafeAreaView style={styles.loginScreen}><Text style={styles.loginTitle}>Loading PGCopilot...</Text></SafeAreaView>;
@@ -1016,6 +1161,9 @@ const styles = StyleSheet.create({
   loginSecurityHint: { color: colors.muted, textAlign: 'center', fontSize: 11, marginTop: 14 },
   inviteCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 14, marginBottom: 20 },
   inviteMessage: { color: colors.green, fontSize: 12, fontWeight: '700', marginTop: 10 },
+  hostelOption: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 13 },
+  hostelOptionActive: { backgroundColor: colors.paleGreen },
+  hostelCreateBox: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 14, marginBottom: 20 },
   logoutButton: { height: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.card, marginBottom: 20 },
   logoutText: { color: colors.red, fontSize: 13, fontWeight: '800' },
 });

@@ -5,6 +5,14 @@ export type RentStatus = 'Paid' | 'Partial' | 'Pending';
 export type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
 export type UserRole = 'Owner' | 'Staff';
 
+export type HostelSummary = {
+  id: string;
+  ownerId?: string;
+  name: string;
+  address: string;
+  role: UserRole;
+};
+
 export type Room = {
   id?: string;
   number: string;
@@ -34,8 +42,10 @@ export type Expense = {
 
 export type PgMasterData = {
   hostelId?: string;
+  selectedHostelId?: string;
   ownerId?: string;
   currentUserRole?: UserRole;
+  hostels?: HostelSummary[];
   propertyName: string;
   propertyAddress: string;
   rooms: Room[];
@@ -67,9 +77,19 @@ export type HostelSetupInput = {
 const tenantTones = ['#DDEFE7', '#E4EEFA', '#FCE9DF', '#F7EED5', '#EAE4F8', '#E0F3F0'];
 
 export const fallbackData: PgMasterData = {
+  hostelId: 'demo-hostel',
+  selectedHostelId: 'demo-hostel',
   propertyName: "Greenview Men's PG",
   propertyAddress: 'HSR Layout, Bengaluru',
   currentUserRole: 'Owner',
+  hostels: [
+    {
+      id: 'demo-hostel',
+      name: "Greenview Men's PG",
+      address: 'HSR Layout, Bengaluru',
+      role: 'Owner',
+    },
+  ],
   rooms: [
     { number: '101', floor: 'Ground', type: 'Triple', beds: ['Occupied', 'Occupied', 'Vacant'] },
     { number: '102', floor: 'Ground', type: 'Double', beds: ['Occupied', 'Vacant'] },
@@ -97,6 +117,7 @@ const emptyHostelData: PgMasterData = {
   propertyName: 'Create your first hostel',
   propertyAddress: 'Set up your property to start using PGCopilot',
   currentUserRole: 'Owner',
+  hostels: [],
   rooms: [],
   tenants: [],
   expenses: [],
@@ -176,7 +197,7 @@ export async function acceptStaffInvites() {
   await supabase.rpc('accept_staff_invites');
 }
 
-export async function loadPgMasterData(): Promise<LoadPgMasterResult> {
+export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadPgMasterResult> {
   if (!isSupabaseConfigured || !supabase) {
     return { data: fallbackData, source: 'demo' };
   }
@@ -189,26 +210,43 @@ export async function loadPgMasterData(): Promise<LoadPgMasterResult> {
   const { data: hostels, error: hostelError } = await supabase
     .from('hostels')
     .select('id,name,address,owner_id')
-    .order('created_at', { ascending: true })
-    .limit(1);
+    .order('created_at', { ascending: true });
 
   if (hostelError) {
     return { data: fallbackData, source: 'demo', error: hostelError.message };
   }
 
-  const hostel = hostels?.[0] as any;
-  if (!hostel) {
+  const hostelRows = (hostels ?? []) as any[];
+  const hostelIds = hostelRows.map((hostel) => hostel.id);
+  if (hostelIds.length === 0) {
     return { data: emptyHostelData, source: 'supabase', needsHostelSetup: true };
   }
 
-  const { data: membership } = await supabase
+  const { data: memberships } = await supabase
     .from('hostel_members')
-    .select('role')
-    .eq('hostel_id', hostel.id)
-    .eq('user_id', userId)
-    .maybeSingle();
+    .select('hostel_id,role')
+    .in('hostel_id', hostelIds)
+    .eq('user_id', userId);
 
-  const role = (membership?.role === 'Staff' ? 'Staff' : 'Owner') as UserRole;
+  const roleByHostel = new Map<string, UserRole>();
+  (memberships ?? []).forEach((membership: any) => {
+    roleByHostel.set(membership.hostel_id, membership.role === 'Staff' ? 'Staff' : 'Owner');
+  });
+
+  const hostelSummaries: HostelSummary[] = hostelRows.map((hostel) => ({
+    id: hostel.id,
+    ownerId: hostel.owner_id,
+    name: hostel.name,
+    address: hostel.address,
+    role: roleByHostel.get(hostel.id) ?? (hostel.owner_id === userId ? 'Owner' : 'Staff'),
+  }));
+
+  const hostel = hostelRows.find((item) => item.id === selectedHostelId) ?? hostelRows[0];
+  if (!hostel) {
+    return { data: emptyHostelData, source: 'supabase', needsHostelSetup: true };
+  }
+  const currentHostel = hostelSummaries.find((item) => item.id === hostel.id);
+  const role = currentHostel?.role ?? 'Owner';
 
   const [roomsResult, tenantsResult, expensesResult] = await Promise.all([
     supabase
@@ -272,8 +310,10 @@ export async function loadPgMasterData(): Promise<LoadPgMasterResult> {
   return {
     data: {
       hostelId: hostel.id,
+      selectedHostelId: hostel.id,
       ownerId: hostel.owner_id,
       currentUserRole: role,
+      hostels: hostelSummaries,
       propertyName: hostel.name,
       propertyAddress: hostel.address,
       rooms,
@@ -289,16 +329,16 @@ export async function createOwnerHostel(input: HostelSetupInput) {
   const userId = await currentUserId();
   if (!userId) throw new Error('Login session expired. Please login again.');
 
-  const { error } = await supabase.from('hostels').insert({
+  const { data: createdHostel, error } = await supabase.from('hostels').insert({
     name: input.name,
     address: input.address,
     contact_number: input.contactNumber || null,
     owner_id: userId,
     created_by: userId,
-  });
+  }).select('id').single();
 
   if (error) throw new Error(error.message);
-  const refreshed = await loadPgMasterData();
+  const refreshed = await loadPgMasterData((createdHostel as any)?.id);
   return refreshed.data;
 }
 
@@ -318,6 +358,7 @@ export async function inviteStaff(input: { hostelId?: string; phone: string }) {
   const { error } = await supabase.from('staff_invites').insert({
     hostel_id: input.hostelId,
     owner_id: (hostel as any)?.owner_id ?? userId,
+    created_by: userId,
     phone_number: normalisePhone(input.phone),
     role: 'Staff',
     invited_by: userId,
@@ -377,6 +418,6 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
     await supabase.from('beds').update({ status: 'Occupied' }).eq('id', bedId);
   }
 
-  const refreshed = await loadPgMasterData();
+  const refreshed = await loadPgMasterData(currentData.hostelId);
   return refreshed.data;
 }

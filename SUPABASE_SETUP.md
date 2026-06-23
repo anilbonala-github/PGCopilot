@@ -15,7 +15,7 @@ PGCopilot uses one shared Supabase project for:
 
 Without an SMS provider, Supabase phone OTP may not deliver codes in production.
 
-## 2. Run Sprint 1 Database Schema
+## 2. Run Sprint 1 + Module 2 Database Schema
 
 1. Open Supabase > SQL Editor.
 2. Open `supabase/schema.sql` from this repo.
@@ -35,6 +35,15 @@ This creates the production-pilot foundation:
 - `rent_payments`
 
 It also enables RLS so users can only access hostels where they are Owner or Staff.
+
+Module 2 multi-hostel support is included:
+
+- Owner -> Hostel -> Rooms -> Beds -> Tenants hierarchy
+- Child records include `owner_id`, `hostel_id`, and `created_by`
+- Hostel records include their own `id`, plus `owner_id` and `created_by`
+- Database triggers fill missing ownership/audit fields on new records
+- Existing rows are backfilled where possible from the parent hostel
+- Owner and Staff users only see assigned hostel data through RLS
 
 ## 3. Add App Keys
 
@@ -65,6 +74,8 @@ Then redeploy. Expo web bakes these values during `npm run build:web`.
 3. If no hostel exists for the logged-in owner, the app shows Create Hostel.
 4. Create the hostel.
 5. The SQL trigger automatically creates the Owner membership.
+
+After the first hostel is created, owners can use the hostel name dropdown on the dashboard to create another hostel or switch between hostels. Rooms, beds, tenants, expenses, rent reports, and staff invites are scoped to the selected hostel.
 
 ## 6. Staff Invite Flow
 

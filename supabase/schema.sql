@@ -36,6 +36,8 @@ create table if not exists public.hostel_members (
   unique (hostel_id, user_id)
 );
 
+alter table public.hostel_members add column if not exists created_by uuid references auth.users(id) on delete set null;
+
 create table if not exists public.staff_invites (
   id uuid primary key default gen_random_uuid(),
   hostel_id uuid not null references public.hostels(id) on delete cascade,
@@ -48,6 +50,8 @@ create table if not exists public.staff_invites (
   accepted_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table public.staff_invites add column if not exists created_by uuid references auth.users(id) on delete set null;
 
 create table if not exists public.rooms (
   id uuid primary key default gen_random_uuid(),
@@ -222,6 +226,136 @@ as $$
   );
 $$;
 
+create or replace function public.apply_hostel_creator_fields()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.owner_id := coalesce(new.owner_id, auth.uid());
+  new.created_by := coalesce(new.created_by, auth.uid());
+  return new;
+end;
+$$;
+
+drop trigger if exists before_hostel_insert_creator_fields on public.hostels;
+create trigger before_hostel_insert_creator_fields
+before insert on public.hostels
+for each row execute function public.apply_hostel_creator_fields();
+
+create or replace function public.apply_hostel_audit_fields()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  hostel_owner uuid;
+begin
+  select owner_id into hostel_owner
+  from public.hostels
+  where id = new.hostel_id;
+
+  if hostel_owner is null then
+    raise exception 'Hostel owner could not be resolved for %', new.hostel_id;
+  end if;
+
+  new.owner_id := coalesce(new.owner_id, hostel_owner);
+  new.created_by := coalesce(new.created_by, auth.uid());
+  return new;
+end;
+$$;
+
+drop trigger if exists before_hostel_members_insert_audit_fields on public.hostel_members;
+create trigger before_hostel_members_insert_audit_fields
+before insert on public.hostel_members
+for each row execute function public.apply_hostel_audit_fields();
+
+drop trigger if exists before_staff_invites_insert_audit_fields on public.staff_invites;
+create trigger before_staff_invites_insert_audit_fields
+before insert on public.staff_invites
+for each row execute function public.apply_hostel_audit_fields();
+
+drop trigger if exists before_rooms_insert_audit_fields on public.rooms;
+create trigger before_rooms_insert_audit_fields
+before insert on public.rooms
+for each row execute function public.apply_hostel_audit_fields();
+
+drop trigger if exists before_beds_insert_audit_fields on public.beds;
+create trigger before_beds_insert_audit_fields
+before insert on public.beds
+for each row execute function public.apply_hostel_audit_fields();
+
+drop trigger if exists before_tenants_insert_audit_fields on public.tenants;
+create trigger before_tenants_insert_audit_fields
+before insert on public.tenants
+for each row execute function public.apply_hostel_audit_fields();
+
+drop trigger if exists before_expenses_insert_audit_fields on public.expenses;
+create trigger before_expenses_insert_audit_fields
+before insert on public.expenses
+for each row execute function public.apply_hostel_audit_fields();
+
+drop trigger if exists before_rent_payments_insert_audit_fields on public.rent_payments;
+create trigger before_rent_payments_insert_audit_fields
+before insert on public.rent_payments
+for each row execute function public.apply_hostel_audit_fields();
+
+update public.hostels
+set owner_id = coalesce(owner_id, created_by),
+    created_by = coalesce(created_by, owner_id)
+where owner_id is null or created_by is null;
+
+update public.hostel_members hm
+set owner_id = coalesce(hm.owner_id, h.owner_id),
+    created_by = coalesce(hm.created_by, hm.invited_by, h.owner_id)
+from public.hostels h
+where hm.hostel_id = h.id
+  and (hm.owner_id is null or hm.created_by is null);
+
+update public.staff_invites si
+set owner_id = coalesce(si.owner_id, h.owner_id),
+    created_by = coalesce(si.created_by, si.invited_by, h.owner_id)
+from public.hostels h
+where si.hostel_id = h.id
+  and (si.owner_id is null or si.created_by is null);
+
+update public.rooms r
+set owner_id = coalesce(r.owner_id, h.owner_id),
+    created_by = coalesce(r.created_by, h.owner_id)
+from public.hostels h
+where r.hostel_id = h.id
+  and (r.owner_id is null or r.created_by is null);
+
+update public.beds b
+set owner_id = coalesce(b.owner_id, h.owner_id),
+    created_by = coalesce(b.created_by, h.owner_id)
+from public.hostels h
+where b.hostel_id = h.id
+  and (b.owner_id is null or b.created_by is null);
+
+update public.tenants t
+set owner_id = coalesce(t.owner_id, h.owner_id),
+    created_by = coalesce(t.created_by, h.owner_id)
+from public.hostels h
+where t.hostel_id = h.id
+  and (t.owner_id is null or t.created_by is null);
+
+update public.expenses e
+set owner_id = coalesce(e.owner_id, h.owner_id),
+    created_by = coalesce(e.created_by, h.owner_id)
+from public.hostels h
+where e.hostel_id = h.id
+  and (e.owner_id is null or e.created_by is null);
+
+update public.rent_payments rp
+set owner_id = coalesce(rp.owner_id, h.owner_id),
+    created_by = coalesce(rp.created_by, h.owner_id)
+from public.hostels h
+where rp.hostel_id = h.id
+  and (rp.owner_id is null or rp.created_by is null);
+
 create or replace function public.sync_new_auth_user()
 returns trigger
 language plpgsql
@@ -251,12 +385,13 @@ set search_path = public
 as $$
 begin
   if new.owner_id is not null then
-    insert into public.hostel_members (hostel_id, owner_id, user_id, role, status, invited_by)
-    values (new.id, new.owner_id, new.owner_id, 'Owner', 'Active', new.created_by)
+    insert into public.hostel_members (hostel_id, owner_id, user_id, role, status, invited_by, created_by)
+    values (new.id, new.owner_id, new.owner_id, 'Owner', 'Active', new.created_by, new.created_by)
     on conflict (hostel_id, user_id) do update
       set role = 'Owner',
           status = 'Active',
-          owner_id = excluded.owner_id;
+          owner_id = excluded.owner_id,
+          created_by = coalesce(public.hostel_members.created_by, excluded.created_by);
   end if;
   return new;
 end;
@@ -293,12 +428,13 @@ begin
     where status = 'Pending'
       and public.normalized_phone(phone_number) = user_phone
   loop
-    insert into public.hostel_members (hostel_id, owner_id, user_id, role, status, invited_by)
-    values (invite.hostel_id, invite.owner_id, auth.uid(), invite.role, 'Active', invite.invited_by)
+    insert into public.hostel_members (hostel_id, owner_id, user_id, role, status, invited_by, created_by)
+    values (invite.hostel_id, invite.owner_id, auth.uid(), invite.role, 'Active', invite.invited_by, invite.invited_by)
     on conflict (hostel_id, user_id) do update
       set role = excluded.role,
           status = 'Active',
-          owner_id = excluded.owner_id;
+          owner_id = excluded.owner_id,
+          created_by = coalesce(public.hostel_members.created_by, excluded.created_by);
 
     update public.staff_invites
     set status = 'Accepted',
