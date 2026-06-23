@@ -421,7 +421,7 @@ function Rooms({ data }: { data: PgMasterData }) {
             {room.beds.map((status, index) => (
               <View key={`${room.number}-${index}`} style={[styles.bedBox, status === 'Vacant' && styles.bedVacant, status === 'Reserved' && styles.bedReserved, status === 'Maintenance' && styles.bedMaintenance]}>
                 <AppIcon name="bed-outline" size={19} color={status === 'Vacant' ? colors.green : status === 'Reserved' ? colors.orange : status === 'Maintenance' ? colors.red : colors.blue} />
-                <Text style={styles.bedName}>{room.number}-{String.fromCharCode(65 + index)}</Text>
+                <Text style={styles.bedName}>{room.bedNumbers?.[index] ?? `${room.number}-${String.fromCharCode(65 + index)}`}</Text>
                 <Text style={[styles.bedStatus, { color: status === 'Vacant' ? colors.green : status === 'Reserved' ? colors.orange : status === 'Maintenance' ? colors.red : colors.blue }]}>{status}</Text>
               </View>
             ))}
@@ -471,7 +471,7 @@ function Tenants({ data, onAddTenant }: { data: PgMasterData; onAddTenant: (inpu
         </View>
       </ScrollView>
       <TouchableOpacity accessibilityLabel="Add tenant" style={styles.fab} onPress={() => setModal(true)}><AppIcon name="plus" size={28} color="#FFF" /></TouchableOpacity>
-      <AddTenantModal visible={modal} onClose={() => setModal(false)} onSubmit={onAddTenant} />
+      <AddTenantModal visible={modal} onClose={() => setModal(false)} onSubmit={onAddTenant} availableBeds={data.assignableBeds ?? []} />
     </>
   );
 }
@@ -485,7 +485,7 @@ const tenantDocumentTypes: TenantDocumentType[] = [
   'Agreement Document',
 ];
 
-function AddTenantModal({ visible, onClose, onSubmit }: { visible: boolean; onClose: () => void; onSubmit: (input: NewTenantInput) => Promise<void> }) {
+function AddTenantModal({ visible, onClose, onSubmit, availableBeds }: { visible: boolean; onClose: () => void; onSubmit: (input: NewTenantInput) => Promise<void>; availableBeds: string[] }) {
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
   const [emergencyContact, setEmergencyContact] = useState('');
@@ -594,6 +594,16 @@ function AddTenantModal({ visible, onClose, onSubmit }: { visible: boolean; onCl
           <View style={styles.formRow}>
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>MOBILE NUMBER</Text><TextInput placeholder="+91" style={styles.fieldInput} value={mobile} onChangeText={setMobile} keyboardType="phone-pad" /></View>
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>ROOM / BED</Text><TextInput placeholder="101-C" style={styles.fieldInput} value={roomBed} onChangeText={setRoomBed} /></View>
+          </View>
+          <View style={styles.availableBedBox}>
+            <Text style={styles.fieldLabel}>AVAILABLE BEDS</Text>
+            <View style={styles.availableBedRow}>
+              {availableBeds.length ? availableBeds.map((bedNumber) => (
+                <TouchableOpacity key={bedNumber} style={[styles.availableBedChip, roomBed === bedNumber && styles.availableBedChipActive]} onPress={() => setRoomBed(bedNumber)}>
+                  <Text style={[styles.availableBedText, roomBed === bedNumber && styles.availableBedTextActive]}>{bedNumber}</Text>
+                </TouchableOpacity>
+              )) : <Text style={styles.activityCaption}>No vacant beds available in this hostel.</Text>}
+            </View>
           </View>
           <View style={styles.formRow}>
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>EMERGENCY CONTACT</Text><TextInput placeholder="+91" style={styles.fieldInput} value={emergencyContact} onChangeText={setEmergencyContact} keyboardType="phone-pad" /></View>
@@ -1230,6 +1240,12 @@ const styles = StyleSheet.create({
   formField: { backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, marginBottom: 10 },
   fieldLabel: { color: colors.muted, fontWeight: '800', fontSize: 9, letterSpacing: 0.6 },
   fieldInput: { color: colors.ink, fontSize: 13, marginTop: 7, outlineStyle: 'none' } as any,
+  availableBedBox: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, marginBottom: 10 },
+  availableBedRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 8 },
+  availableBedChip: { paddingHorizontal: 10, paddingVertical: 7, borderRadius: 14, backgroundColor: colors.paleGreen, borderWidth: 1, borderColor: '#CDEADE' },
+  availableBedChipActive: { backgroundColor: colors.green, borderColor: colors.green },
+  availableBedText: { color: colors.green, fontWeight: '800', fontSize: 11 },
+  availableBedTextActive: { color: '#FFF' },
   primaryButton: { backgroundColor: colors.green, height: 49, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 9 },
   primaryButtonText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
   secondaryButton: { height: 44, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderWidth: 1, borderColor: colors.line },

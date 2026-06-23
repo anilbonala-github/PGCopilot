@@ -84,6 +84,17 @@ Module 4 tenant admission is included:
 
 Tenant document files are uploaded to the private `tenant-documents` Supabase Storage bucket, and metadata is stored in `tenant_documents`.
 
+Module 5 bed allocation rules are included:
+
+- Tenant admission can assign only `Vacant` beds
+- `Occupied`, `Reserved`, and `Maintenance` beds are blocked
+- Database triggers enforce the rule even if a client bypasses the UI
+- Assigning an active tenant automatically marks the bed `Occupied`
+- Vacating a tenant automatically frees the bed back to `Vacant`
+- Dashboard occupancy and vacant counts update from live bed statuses
+- Reserved beds expire automatically when `expire_reserved_beds()` runs during app data sync
+- Configure reserved-bed expiry per hostel with `hostels.reserved_bed_expiry_days` default `3`
+
 ## 3. Add App Keys
 
 Use only the anon public key in the app.

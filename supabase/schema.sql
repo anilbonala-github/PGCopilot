@@ -18,11 +18,20 @@ create table if not exists public.hostels (
   gst_number text,
   upi_id text,
   bank_details text,
+  reserved_bed_expiry_days integer not null default 3 check (reserved_bed_expiry_days between 1 and 30),
   created_at timestamptz not null default now()
 );
 
 alter table public.hostels add column if not exists owner_id uuid references auth.users(id) on delete set null;
 alter table public.hostels add column if not exists created_by uuid references auth.users(id) on delete set null;
+alter table public.hostels add column if not exists reserved_bed_expiry_days integer not null default 3;
+
+do $$
+begin
+  alter table public.hostels add constraint hostels_reserved_bed_expiry_days_check check (reserved_bed_expiry_days between 1 and 30);
+exception
+  when duplicate_object then null;
+end $$;
 
 create table if not exists public.hostel_members (
   id uuid primary key default gen_random_uuid(),
@@ -76,12 +85,14 @@ create table if not exists public.beds (
   created_by uuid references auth.users(id) on delete set null,
   bed_number text not null,
   status text not null check (status in ('Occupied', 'Vacant', 'Reserved', 'Maintenance')),
+  reserved_until timestamptz,
   created_at timestamptz not null default now(),
   unique (hostel_id, bed_number)
 );
 
 alter table public.beds add column if not exists owner_id uuid references auth.users(id) on delete set null;
 alter table public.beds add column if not exists created_by uuid references auth.users(id) on delete set null;
+alter table public.beds add column if not exists reserved_until timestamptz;
 
 create table if not exists public.tenants (
   id uuid primary key default gen_random_uuid(),
@@ -305,6 +316,136 @@ exception
     return null;
 end;
 $$;
+
+create or replace function public.apply_bed_reservation_expiry()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  expiry_days integer;
+begin
+  if new.status = 'Reserved' and new.reserved_until is null then
+    select reserved_bed_expiry_days into expiry_days
+    from public.hostels
+    where id = new.hostel_id;
+
+    new.reserved_until := now() + make_interval(days => coalesce(expiry_days, 3));
+  elsif new.status <> 'Reserved' then
+    new.reserved_until := null;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists before_beds_save_reservation_expiry on public.beds;
+create trigger before_beds_save_reservation_expiry
+before insert or update of status, reserved_until, hostel_id on public.beds
+for each row execute function public.apply_bed_reservation_expiry();
+
+create or replace function public.expire_reserved_beds(target_hostel_id uuid default null)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  changed_count integer;
+begin
+  update public.beds b
+  set status = 'Vacant',
+      reserved_until = null
+  where b.status = 'Reserved'
+    and b.reserved_until is not null
+    and b.reserved_until < now()
+    and (target_hostel_id is null or b.hostel_id = target_hostel_id)
+    and public.is_hostel_member(b.hostel_id);
+
+  get diagnostics changed_count = row_count;
+  return changed_count;
+end;
+$$;
+
+create or replace function public.validate_tenant_bed_assignment()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  selected_bed record;
+begin
+  if new.bed_id is null or new.status = 'Vacated' or new.is_active = false then
+    return new;
+  end if;
+
+  perform public.expire_reserved_beds(new.hostel_id);
+
+  select id, hostel_id, status
+  into selected_bed
+  from public.beds
+  where id = new.bed_id;
+
+  if selected_bed.id is null then
+    raise exception 'Selected bed does not exist.';
+  end if;
+
+  if selected_bed.hostel_id <> new.hostel_id then
+    raise exception 'Selected bed belongs to a different hostel.';
+  end if;
+
+  if tg_op = 'INSERT' or new.bed_id is distinct from old.bed_id then
+    if selected_bed.status <> 'Vacant' then
+      raise exception 'Selected bed is %, only Vacant beds can be assigned.', selected_bed.status;
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function public.sync_bed_status_from_tenant()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'UPDATE' and old.bed_id is not null and old.bed_id is distinct from new.bed_id then
+    update public.beds
+    set status = 'Vacant'
+    where id = old.bed_id
+      and status = 'Occupied';
+  end if;
+
+  if new.bed_id is not null and new.status = 'Active' and new.is_active = true then
+    update public.beds
+    set status = 'Occupied'
+    where id = new.bed_id;
+  end if;
+
+  if tg_op = 'UPDATE' and new.bed_id is not null and (new.status = 'Vacated' or new.is_active = false) then
+    update public.beds
+    set status = 'Vacant'
+    where id = new.bed_id
+      and status = 'Occupied';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists before_tenants_validate_bed_assignment on public.tenants;
+create trigger before_tenants_validate_bed_assignment
+before insert or update of bed_id, hostel_id, status, is_active on public.tenants
+for each row execute function public.validate_tenant_bed_assignment();
+
+drop trigger if exists after_tenants_sync_bed_status on public.tenants;
+create trigger after_tenants_sync_bed_status
+after insert or update of bed_id, status, is_active on public.tenants
+for each row execute function public.sync_bed_status_from_tenant();
 
 create or replace function public.apply_hostel_creator_fields()
 returns trigger

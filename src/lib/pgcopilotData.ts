@@ -18,6 +18,7 @@ export type Room = {
   number: string;
   floor: string;
   type: string;
+  bedNumbers?: string[];
   beds: BedStatus[];
 };
 
@@ -60,6 +61,7 @@ export type PgMasterData = {
   rooms: Room[];
   tenants: Tenant[];
   expenses: Expense[];
+  assignableBeds?: string[];
 };
 
 export type LoadPgMasterResult = {
@@ -117,12 +119,13 @@ export const fallbackData: PgMasterData = {
     },
   ],
   rooms: [
-    { number: '101', floor: 'Ground', type: 'Triple', beds: ['Occupied', 'Occupied', 'Vacant'] },
-    { number: '102', floor: 'Ground', type: 'Double', beds: ['Occupied', 'Vacant'] },
-    { number: '201', floor: '1st Floor', type: 'Triple', beds: ['Occupied', 'Occupied', 'Occupied'] },
-    { number: '202', floor: '1st Floor', type: 'Double', beds: ['Reserved', 'Vacant'] },
-    { number: '301', floor: '2nd Floor', type: 'Triple', beds: ['Occupied', 'Maintenance', 'Vacant'] },
+    { number: '101', floor: 'Ground', type: 'Triple', bedNumbers: ['101-A', '101-B', '101-C'], beds: ['Occupied', 'Occupied', 'Vacant'] },
+    { number: '102', floor: 'Ground', type: 'Double', bedNumbers: ['102-A', '102-B'], beds: ['Occupied', 'Vacant'] },
+    { number: '201', floor: '1st Floor', type: 'Triple', bedNumbers: ['201-A', '201-B', '201-C'], beds: ['Occupied', 'Occupied', 'Occupied'] },
+    { number: '202', floor: '1st Floor', type: 'Double', bedNumbers: ['202-A', '202-B'], beds: ['Reserved', 'Vacant'] },
+    { number: '301', floor: '2nd Floor', type: 'Triple', bedNumbers: ['301-A', '301-B', '301-C'], beds: ['Occupied', 'Maintenance', 'Vacant'] },
   ],
+  assignableBeds: ['101-C', '102-B', '202-B', '301-C'],
   tenants: [
     { initials: 'RS', name: 'Ramesh S', room: '101-A', mobile: '98450 23891', rent: 8500, status: 'Paid', tone: '#DDEFE7' },
     { initials: 'AK', name: 'Arun Kumar', room: '101-B', mobile: '99721 18452', rent: 8500, status: 'Paid', tone: '#E4EEFA' },
@@ -147,6 +150,7 @@ const emptyHostelData: PgMasterData = {
   rooms: [],
   tenants: [],
   expenses: [],
+  assignableBeds: [],
 };
 
 export function buildSummary(data: PgMasterData) {
@@ -326,6 +330,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
   }
   const currentHostel = hostelSummaries.find((item) => item.id === hostel.id);
   const role = currentHostel?.role ?? 'Owner';
+  await supabase.rpc('expire_reserved_beds', { target_hostel_id: hostel.id });
 
   const [roomsResult, tenantsResult, expensesResult] = await Promise.all([
     supabase
@@ -359,10 +364,18 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
     number: room.room_number,
     floor: room.floor,
     type: room.room_type,
+    bedNumbers: [...(room.beds ?? [])]
+      .sort((a, b) => String(a.bed_number).localeCompare(String(b.bed_number)))
+      .map((bed) => String(bed.bed_number)),
     beds: [...(room.beds ?? [])]
       .sort((a, b) => String(a.bed_number).localeCompare(String(b.bed_number)))
       .map((bed) => normaliseBedStatus(bed.status)),
   }));
+  const assignableBeds = rooms.flatMap((room) =>
+    room.beds
+      .map((status, index) => status === 'Vacant' ? room.bedNumbers?.[index] : undefined)
+      .filter((bedNumber): bedNumber is string => Boolean(bedNumber))
+  );
 
   const tenants: Tenant[] = (tenantsResult.data ?? []).map((tenant: any, index: number) => {
     const bedNumber = tenant.beds?.bed_number ?? 'Unassigned';
@@ -407,6 +420,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       rooms,
       tenants,
       expenses,
+      assignableBeds,
     },
     source: 'supabase',
   };
@@ -492,12 +506,17 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
   const userId = await currentUserId();
   let bedId: string | null = null;
   if (input.roomBed.trim()) {
+    await supabase.rpc('expire_reserved_beds', { target_hostel_id: currentData.hostelId });
     const { data: bed } = await supabase
       .from('beds')
-      .select('id')
+      .select('id,status')
       .eq('hostel_id', currentData.hostelId)
       .ilike('bed_number', input.roomBed.trim())
       .maybeSingle();
+    const bedStatus = (bed as any)?.status;
+    if (bedStatus && bedStatus !== 'Vacant') {
+      throw new Error(`Bed ${input.roomBed.trim()} is ${bedStatus}. Only vacant beds can be assigned.`);
+    }
     bedId = (bed as any)?.id ?? null;
   }
 
@@ -526,10 +545,6 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
 
   if (tenantId) {
     await uploadTenantDocuments(input, tenantId, currentData, userId);
-  }
-
-  if (bedId && input.status === 'Active') {
-    await supabase.from('beds').update({ status: 'Occupied' }).eq('id', bedId);
   }
 
   const refreshed = await loadPgMasterData(currentData.hostelId);
