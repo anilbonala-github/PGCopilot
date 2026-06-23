@@ -849,6 +849,7 @@ export default function App() {
   const [needsHostelSetup, setNeedsHostelSetup] = useState(false);
   const [savingHostel, setSavingHostel] = useState(false);
   const [selectedHostelId, setSelectedHostelId] = useState<string | undefined>();
+  const [liveDataReady, setLiveDataReady] = useState(!isSupabaseConfigured);
 
   const authenticated = demoMode || Boolean(session);
 
@@ -861,6 +862,7 @@ export default function App() {
       setDataError(result.error);
       setNeedsHostelSetup(Boolean(result.needsHostelSetup));
       setSelectedHostelId(result.data.selectedHostelId ?? result.data.hostelId);
+      setLiveDataReady(true);
     } finally {
       setLoadingData(false);
     }
@@ -875,6 +877,7 @@ export default function App() {
       setSession(data.session);
       setAuthReady(true);
       if (data.session) {
+        setLiveDataReady(false);
         await acceptStaffInvites();
       }
     });
@@ -884,11 +887,13 @@ export default function App() {
       setDemoMode(false);
       setAuthReady(true);
       if (nextSession) {
+        setLiveDataReady(false);
         acceptStaffInvites().finally(() => refreshData());
       } else {
         setPgData(fallbackData);
         setNeedsHostelSetup(false);
         setSelectedHostelId(undefined);
+        setLiveDataReady(false);
       }
     });
 
@@ -929,6 +934,7 @@ export default function App() {
     try {
       const { data, error } = await supabase.auth.verifyOtp({ phone, token, type: 'sms' });
       if (error) throw error;
+      setLiveDataReady(false);
       setSession(data.session);
       await acceptStaffInvites();
       await refreshData();
@@ -950,6 +956,7 @@ export default function App() {
     setPgData(fallbackData);
     setNeedsHostelSetup(false);
     setSelectedHostelId(undefined);
+    setLiveDataReady(false);
   };
 
   const handleCreateHostel = async (input: HostelSetupInput) => {
@@ -987,6 +994,7 @@ export default function App() {
 
   if (!authReady) return <SafeAreaView style={styles.loginScreen}><Text style={styles.loginTitle}>Loading PGCopilot...</Text></SafeAreaView>;
   if (!authenticated) return <><StatusBar style="dark" /><Login authEnabled={isSupabaseConfigured} onDemoLogin={() => setDemoMode(true)} onSendOtp={handleSendOtp} onVerifyOtp={handleVerifyOtp} loading={authLoading} error={authError} /></>;
+  if (!demoMode && isSupabaseConfigured && !liveDataReady) return <SafeAreaView style={styles.loginScreen}><StatusBar style="dark" /><Text style={styles.loginTitle}>Loading your hostel...</Text><Text style={styles.loginCaption}>Syncing secure Supabase data</Text></SafeAreaView>;
   if (needsHostelSetup) return <><StatusBar style="dark" /><HostelSetup onCreate={handleCreateHostel} onLogout={handleLogout} saving={savingHostel} error={dataError} /></>;
   return (
     <SafeAreaView style={styles.app}>
