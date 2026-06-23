@@ -106,8 +106,12 @@ create table if not exists public.tenants (
   aadhaar_number text,
   company_college text,
   joining_date date not null default current_date,
+  vacate_date date,
   monthly_rent numeric not null default 0,
   deposit_amount numeric not null default 0,
+  damage_charges numeric not null default 0,
+  deposit_refund numeric not null default 0,
+  vacate_notes text,
   food_included boolean not null default true,
   rent_due_day integer not null default 5 check (rent_due_day between 1 and 31),
   status text not null default 'Active' check (status in ('Active', 'Vacated')),
@@ -122,6 +126,10 @@ alter table public.tenants add column if not exists created_by uuid references a
 alter table public.tenants add column if not exists emergency_contact text;
 alter table public.tenants add column if not exists aadhaar_number text;
 alter table public.tenants add column if not exists company_college text;
+alter table public.tenants add column if not exists vacate_date date;
+alter table public.tenants add column if not exists damage_charges numeric not null default 0;
+alter table public.tenants add column if not exists deposit_refund numeric not null default 0;
+alter table public.tenants add column if not exists vacate_notes text;
 alter table public.tenants add column if not exists food_included boolean not null default true;
 alter table public.tenants add column if not exists rent_due_day integer not null default 5;
 alter table public.tenants add column if not exists status text not null default 'Active';
@@ -542,6 +550,7 @@ create or replace function public.record_rent_payment(
   target_rent_payment_id uuid,
   payment_amount numeric,
   payment_mode_value text,
+  payment_date_value timestamptz default now(),
   payment_notes text default null
 )
 returns public.rent_receipts
@@ -601,7 +610,7 @@ begin
     bill.id,
     bill.tenant_id,
     public.next_receipt_number(bill.hostel_id),
-    now(),
+    coalesce(payment_date_value, now()),
     payment_amount,
     payment_mode_value,
     payment_notes

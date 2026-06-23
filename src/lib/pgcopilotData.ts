@@ -28,17 +28,24 @@ export type Tenant = {
   initials: string;
   name: string;
   room: string;
+  roomNumber?: string;
+  floor?: string;
   mobile: string;
   emergencyContact?: string;
   aadhaarNumber?: string;
   companyCollege?: string;
   joiningDate?: string;
+  vacateDate?: string;
   rent: number;
   deposit?: number;
+  damageCharges?: number;
+  depositRefund?: number;
+  vacateNotes?: string;
   foodIncluded?: boolean;
   rentDueDay?: number;
   admissionStatus?: 'Active' | 'Vacated';
   documentCount?: number;
+  documents?: TenantDocument[];
   status: RentStatus;
   tone: string;
 };
@@ -122,10 +129,33 @@ export type TenantDocumentInput = {
   mimeType?: string;
 };
 
+export type TenantDocument = {
+  id: string;
+  type: string;
+  fileName: string;
+  storagePath?: string;
+  mimeType?: string;
+};
+
 export type RecordRentPaymentInput = {
   rentPaymentId: string;
   amount: number;
+  paymentDate?: string;
   paymentMode: PaymentMode;
+  notes?: string;
+};
+
+export type UpdateTenantInput = Omit<NewTenantInput, 'documents'> & {
+  id: string;
+};
+
+export type VacateTenantInput = {
+  tenantId: string;
+  vacateDate: string;
+  depositAmount: number;
+  damageCharges: number;
+  pendingRent: number;
+  refundAmount: number;
   notes?: string;
 };
 
@@ -195,8 +225,9 @@ export function buildSummary(data: PgMasterData) {
   const reservedBeds = statuses.filter((status) => status === 'Reserved').length;
   const maintenanceBeds = statuses.filter((status) => status === 'Maintenance').length;
   const totalBeds = statuses.length;
-  const expectedRent = data.tenants.reduce((sum, tenant) => sum + tenant.rent, 0);
-  const pendingRent = data.tenants
+  const activeTenants = data.tenants.filter((tenant) => tenant.admissionStatus !== 'Vacated');
+  const expectedRent = activeTenants.reduce((sum, tenant) => sum + tenant.rent, 0);
+  const pendingRent = activeTenants
     .filter((tenant) => tenant.status !== 'Paid')
     .reduce((sum, tenant) => sum + tenant.rent, 0);
   const collectedRent = expectedRent - pendingRent;
@@ -218,14 +249,14 @@ export function buildSummary(data: PgMasterData) {
     expectedRent: billedRent,
     collectedRent: paidRent,
     pendingRent: unpaidRent,
-    activeTenants: data.tenants.length,
-    newAdmissions: Math.min(6, data.tenants.length),
+    activeTenants: activeTenants.length,
+    newAdmissions: Math.min(6, activeTenants.length),
     upcomingVacates: 0,
     income: Math.max(billedRent, paidRent),
     expensesTotal,
     profit: Math.max(billedRent, paidRent) - expensesTotal,
     foodExpense,
-    foodResidents: Math.max(occupiedBeds, data.tenants.length),
+    foodResidents: Math.max(occupiedBeds, activeTenants.length),
   };
 }
 
@@ -378,9 +409,8 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       .order('room_number', { ascending: true }),
     supabase
       .from('tenants')
-      .select('id,full_name,mobile_number,emergency_contact,aadhaar_number,company_college,joining_date,monthly_rent,deposit_amount,food_included,rent_due_day,status,rent_status,tenant_documents(id),beds(bed_number,rooms(room_number))')
+      .select('id,full_name,mobile_number,emergency_contact,aadhaar_number,company_college,joining_date,vacate_date,monthly_rent,deposit_amount,damage_charges,deposit_refund,vacate_notes,food_included,rent_due_day,status,rent_status,tenant_documents(id,document_type,file_name,storage_path,mime_type),beds(bed_number,rooms(room_number,floor))')
       .eq('hostel_id', hostel.id)
-      .eq('is_active', true)
       .order('created_at', { ascending: false }),
     supabase
       .from('expenses')
@@ -422,22 +452,36 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
 
   const tenants: Tenant[] = (tenantsResult.data ?? []).map((tenant: any, index: number) => {
     const bedNumber = tenant.beds?.bed_number ?? 'Unassigned';
+    const documents = (tenant.tenant_documents ?? []).map((document: any) => ({
+      id: document.id,
+      type: document.document_type,
+      fileName: document.file_name,
+      storagePath: document.storage_path,
+      mimeType: document.mime_type,
+    }));
     return {
       id: tenant.id,
       initials: initialsFor(tenant.full_name),
       name: tenant.full_name,
       room: bedNumber,
+      roomNumber: tenant.beds?.rooms?.room_number ?? '',
+      floor: tenant.beds?.rooms?.floor ?? '',
       mobile: tenant.mobile_number ?? '',
       emergencyContact: tenant.emergency_contact ?? '',
       aadhaarNumber: tenant.aadhaar_number ?? '',
       companyCollege: tenant.company_college ?? '',
       joiningDate: tenant.joining_date ?? '',
+      vacateDate: tenant.vacate_date ?? '',
       rent: Number(tenant.monthly_rent ?? 0),
       deposit: Number(tenant.deposit_amount ?? 0),
+      damageCharges: Number(tenant.damage_charges ?? 0),
+      depositRefund: Number(tenant.deposit_refund ?? 0),
+      vacateNotes: tenant.vacate_notes ?? '',
       foodIncluded: Boolean(tenant.food_included),
       rentDueDay: Number(tenant.rent_due_day ?? 5),
       admissionStatus: tenant.status === 'Vacated' ? 'Vacated' : 'Active',
-      documentCount: tenant.tenant_documents?.length ?? 0,
+      documentCount: documents.length,
+      documents,
       status: normaliseRentStatus(tenant.rent_status),
       tone: tenantTones[index % tenantTones.length],
     };
@@ -624,6 +668,119 @@ export async function createTenant(input: NewTenantInput, currentData: PgMasterD
   return refreshed.data;
 }
 
+export async function updateTenant(input: UpdateTenantInput, currentData: PgMasterData) {
+  if (!isSupabaseConfigured || !supabase || !currentData.hostelId) {
+    return {
+      ...currentData,
+      tenants: currentData.tenants.map((tenant) => tenant.id === input.id ? {
+        ...tenant,
+        initials: initialsFor(input.name),
+        name: input.name,
+        room: input.roomBed || tenant.room,
+        mobile: input.mobile,
+        emergencyContact: input.emergencyContact,
+        aadhaarNumber: input.aadhaarNumber,
+        companyCollege: input.companyCollege,
+        joiningDate: input.joiningDate,
+        rent: input.rent,
+        deposit: input.deposit,
+        foodIncluded: input.foodIncluded,
+        rentDueDay: input.rentDueDay,
+        admissionStatus: input.status,
+      } : tenant),
+    };
+  }
+
+  if (!input.id) throw new Error('Tenant id is required.');
+  const { data: currentTenant, error: currentError } = await supabase
+    .from('tenants')
+    .select('id,bed_id,beds(bed_number)')
+    .eq('id', input.id)
+    .eq('hostel_id', currentData.hostelId)
+    .maybeSingle();
+
+  if (currentError) throw new Error(currentError.message);
+  if (!currentTenant) throw new Error('Tenant not found.');
+
+  let bedId: string | null = (currentTenant as any).bed_id ?? null;
+  const currentBedNumber = (currentTenant as any).beds?.bed_number ?? '';
+  const nextBedNumber = input.roomBed.trim();
+  if (nextBedNumber && nextBedNumber !== currentBedNumber) {
+    await supabase.rpc('expire_reserved_beds', { target_hostel_id: currentData.hostelId });
+    const { data: bed } = await supabase
+      .from('beds')
+      .select('id,status')
+      .eq('hostel_id', currentData.hostelId)
+      .ilike('bed_number', nextBedNumber)
+      .maybeSingle();
+    const bedStatus = (bed as any)?.status;
+    if (!bed) throw new Error(`Bed ${nextBedNumber} was not found.`);
+    if (bedStatus !== 'Vacant') {
+      throw new Error(`Bed ${nextBedNumber} is ${bedStatus}. Only vacant beds can be assigned.`);
+    }
+    bedId = (bed as any).id;
+  } else if (!nextBedNumber) {
+    bedId = null;
+  }
+
+  const { error } = await supabase
+    .from('tenants')
+    .update({
+      bed_id: bedId,
+      full_name: input.name,
+      mobile_number: input.mobile,
+      emergency_contact: input.emergencyContact || null,
+      aadhaar_number: input.aadhaarNumber || null,
+      company_college: input.companyCollege || null,
+      joining_date: input.joiningDate || new Date().toISOString().slice(0, 10),
+      monthly_rent: input.rent,
+      deposit_amount: input.deposit,
+      food_included: input.foodIncluded,
+      rent_due_day: input.rentDueDay,
+      status: input.status,
+      is_active: input.status === 'Active',
+    })
+    .eq('id', input.id)
+    .eq('hostel_id', currentData.hostelId);
+
+  if (error) throw new Error(error.message);
+  const refreshed = await loadPgMasterData(currentData.hostelId);
+  return refreshed.data;
+}
+
+export async function vacateTenant(input: VacateTenantInput, currentData: PgMasterData) {
+  if (!isSupabaseConfigured || !supabase || !currentData.hostelId) {
+    return {
+      ...currentData,
+      tenants: currentData.tenants.map((tenant) => tenant.id === input.tenantId ? {
+        ...tenant,
+        admissionStatus: 'Vacated' as const,
+        vacateDate: input.vacateDate,
+        damageCharges: input.damageCharges,
+        depositRefund: input.refundAmount,
+        vacateNotes: input.notes,
+      } : tenant),
+    };
+  }
+
+  const { error } = await supabase
+    .from('tenants')
+    .update({
+      status: 'Vacated',
+      is_active: false,
+      vacate_date: input.vacateDate,
+      damage_charges: input.damageCharges,
+      deposit_refund: input.refundAmount,
+      vacate_notes: input.notes || null,
+    })
+    .eq('id', input.tenantId)
+    .eq('hostel_id', currentData.hostelId);
+
+  if (error) throw new Error(error.message);
+  const refreshed = await loadPgMasterData(currentData.hostelId);
+  return refreshed.data;
+}
+
 export async function generateMonthlyRent(currentData: PgMasterData, rentMonth = new Date().toISOString().slice(0, 10)) {
   if (!isSupabaseConfigured || !supabase || !currentData.hostelId) {
     return { data: currentData, generatedCount: 0 };
@@ -647,6 +804,7 @@ export async function recordRentPayment(input: RecordRentPaymentInput, currentDa
   const { data: receipt, error } = await supabase.rpc('record_rent_payment', {
     target_rent_payment_id: input.rentPaymentId,
     payment_amount: input.amount,
+    payment_date_value: input.paymentDate || new Date().toISOString(),
     payment_mode_value: input.paymentMode,
     payment_notes: input.notes || null,
   });

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Image,
+  Linking,
   Modal,
   Platform,
   SafeAreaView,
@@ -29,6 +30,8 @@ import {
   inviteStaff,
   loadPgMasterData,
   recordRentPayment as saveRentPayment,
+  updateTenant as saveTenantUpdate,
+  vacateTenant as saveTenantVacate,
   type HostelSetupInput,
   type NewTenantInput,
   type PaymentMode,
@@ -36,8 +39,11 @@ import {
   type RentBill,
   type RentReceipt,
   type PgMasterData,
+  type Tenant,
   type TenantDocumentInput,
   type TenantDocumentType,
+  type UpdateTenantInput,
+  type VacateTenantInput,
 } from './src/lib/pgcopilotData';
 
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
@@ -64,6 +70,16 @@ const colors = {
 
 const money = (value: number) =>
   `₹${value.toLocaleString('en-IN')}`;
+
+const maskAadhaar = (value?: string) => {
+  const digits = (value ?? '').replace(/\D/g, '');
+  return digits.length >= 4 ? `XXXX XXXX ${digits.slice(-4)}` : 'Not added';
+};
+
+const whatsappPhone = (value: string) => {
+  const digits = value.replace(/\D/g, '');
+  return digits.length === 10 ? `91${digits}` : digits;
+};
 
 const pgcopilotLogo = require('./assets/login-mark.png');
 
@@ -444,20 +460,73 @@ function SmallStat({ value, label, tone }: { value: string; label: string; tone:
   return <View style={styles.smallStat}><Text style={[styles.smallStatValue, { color: colors[tone] }]}>{value}</Text><Text style={styles.smallStatLabel}>{label}</Text></View>;
 }
 
-function Tenants({ data, onAddTenant }: { data: PgMasterData; onAddTenant: (input: NewTenantInput) => Promise<void> }) {
+function Tenants({
+  data,
+  onAddTenant,
+  onUpdateTenant,
+  onVacateTenant,
+  onRecordPayment,
+  onGenerateRent,
+}: {
+  data: PgMasterData;
+  onAddTenant: (input: NewTenantInput) => Promise<void>;
+  onUpdateTenant: (input: UpdateTenantInput) => Promise<void>;
+  onVacateTenant: (input: VacateTenantInput) => Promise<void>;
+  onRecordPayment: (input: RecordRentPaymentInput) => Promise<void>;
+  onGenerateRent: () => Promise<void>;
+}) {
   const [modal, setModal] = useState(false);
   const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState('All');
+  const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>();
   const summary = buildSummary(data);
-  const visibleTenants = data.tenants.filter((tenant) => tenant.name.toLowerCase().includes(query.toLowerCase()) || tenant.room.includes(query));
+  const selectedTenant = data.tenants.find((tenant) => (tenant.id ?? tenant.name) === selectedTenantId);
+  const visibleTenants = data.tenants.filter((tenant) => {
+    const haystack = [tenant.name, tenant.mobile, tenant.room, tenant.roomNumber, tenant.companyCollege].join(' ').toLowerCase();
+    const matchesSearch = haystack.includes(query.toLowerCase());
+    const matchesFilter =
+      filter === 'All'
+      || (filter === 'Active' && tenant.admissionStatus !== 'Vacated')
+      || (filter === 'Vacated' && tenant.admissionStatus === 'Vacated')
+      || (filter === 'Rent paid' && tenant.status === 'Paid')
+      || (filter === 'Rent pending' && tenant.status === 'Pending')
+      || (filter === 'Rent partial' && tenant.status === 'Partial')
+      || (filter === 'Missing docs' && (tenant.documentCount ?? 0) < tenantDocumentTypes.length)
+      || (filter === 'Food included' && tenant.foodIncluded)
+      || (filter === 'Food not included' && !tenant.foodIncluded);
+    return matchesSearch && matchesFilter;
+  });
+
+  if (selectedTenant) {
+    return (
+      <TenantDetail
+        tenant={selectedTenant}
+        data={data}
+        onBack={() => setSelectedTenantId(undefined)}
+        onUpdateTenant={onUpdateTenant}
+        onVacateTenant={onVacateTenant}
+        onRecordPayment={onRecordPayment}
+        onGenerateRent={onGenerateRent}
+      />
+    );
+  }
+
   return (
     <>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         <Header title="Tenants" subtitle={`${summary.activeTenants} active residents`} />
         <View style={styles.searchBar}>
           <AppIcon name="magnify" size={20} color={colors.muted} />
-          <TextInput placeholder="Search name, room or mobile" placeholderTextColor={colors.muted} value={query} onChangeText={setQuery} style={styles.searchInput} />
+          <TextInput placeholder="Search name, mobile, room or company" placeholderTextColor={colors.muted} value={query} onChangeText={setQuery} style={styles.searchInput} />
           <AppIcon name="tune-variant" size={19} color={colors.green} />
         </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterScroller}>
+          {['All', 'Active', 'Vacated', 'Rent paid', 'Rent pending', 'Rent partial', 'Missing docs', 'Food included', 'Food not included'].map((item) => (
+            <TouchableOpacity key={item} style={[styles.filterChip, filter === item && styles.filterChipActive]} onPress={() => setFilter(item)}>
+              <Text style={[styles.filterText, filter === item && styles.filterTextActive]}>{item}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
         <View style={styles.tenantSummary}>
           <View><Text style={styles.summaryNumber}>{summary.activeTenants}</Text><Text style={styles.summaryLabel}>Active</Text></View>
           <View><Text style={styles.summaryNumber}>{summary.newAdmissions}</Text><Text style={styles.summaryLabel}>New this month</Text></View>
@@ -466,15 +535,16 @@ function Tenants({ data, onAddTenant }: { data: PgMasterData; onAddTenant: (inpu
         <SectionTitle title="Residents" action={`${visibleTenants.length} shown`} />
         <View style={styles.listCard}>
           {visibleTenants.map((tenant, index) => (
-            <View key={tenant.id ?? tenant.name} style={[styles.tenantRow, index !== visibleTenants.length - 1 && styles.divider]}>
+            <TouchableOpacity key={tenant.id ?? tenant.name} style={[styles.tenantRow, index !== visibleTenants.length - 1 && styles.divider]} onPress={() => setSelectedTenantId(tenant.id ?? tenant.name)}>
               <View style={[styles.avatar, { backgroundColor: tenant.tone }]}><Text style={styles.avatarText}>{tenant.initials}</Text></View>
               <View style={styles.flex}>
                 <Text style={styles.tenantName}>{tenant.name}</Text>
-                <Text style={styles.activityCaption}>Room {tenant.room} · {tenant.mobile}</Text>
-                <Text style={styles.activityCaption}>{tenant.companyCollege || 'Company/college not added'} · {tenant.documentCount ?? 0} documents</Text>
+                <Text style={styles.activityCaption}>Room {tenant.room} - {tenant.mobile}</Text>
+                <Text style={styles.activityCaption}>{tenant.companyCollege || 'Company/college not added'} - {tenant.documentCount ?? 0} documents</Text>
               </View>
+              <Chip label={tenant.admissionStatus ?? 'Active'} tone={tenant.admissionStatus === 'Vacated' ? 'red' : 'green'} />
               <AppIcon name="chevron-right" size={20} color={colors.muted} />
-            </View>
+            </TouchableOpacity>
           ))}
         </View>
       </ScrollView>
@@ -483,7 +553,6 @@ function Tenants({ data, onAddTenant }: { data: PgMasterData; onAddTenant: (inpu
     </>
   );
 }
-
 const tenantDocumentTypes: TenantDocumentType[] = [
   'Tenant Photo',
   'Aadhaar Front',
@@ -492,6 +561,12 @@ const tenantDocumentTypes: TenantDocumentType[] = [
   'Student ID',
   'Agreement Document',
 ];
+
+function documentTypeLabel(type: TenantDocumentType) {
+  if (type === 'Tenant Photo') return 'Photo';
+  if (type === 'Agreement Document') return 'Agreement';
+  return type;
+}
 
 function AddTenantModal({ visible, onClose, onSubmit, availableBeds }: { visible: boolean; onClose: () => void; onSubmit: (input: NewTenantInput) => Promise<void>; availableBeds: string[] }) {
   const [name, setName] = useState('');
@@ -550,6 +625,26 @@ function AddTenantModal({ visible, onClose, onSubmit, availableBeds }: { visible
   const handleSubmit = async () => {
     if (!name.trim()) {
       setFormError('Full name is required.');
+      return;
+    }
+
+    if (mobile.replace(/\D/g, '').length !== 10) {
+      setFormError('Mobile number must be 10 digits.');
+      return;
+    }
+
+    if (aadhaarNumber && aadhaarNumber.replace(/\D/g, '').length !== 12) {
+      setFormError('Aadhaar number should be 12 digits if entered.');
+      return;
+    }
+
+    if (Number(rent || 0) <= 0) {
+      setFormError('Rent must be greater than 0.');
+      return;
+    }
+
+    if (Number(deposit || 0) < 0) {
+      setFormError('Deposit cannot be negative.');
       return;
     }
 
@@ -672,6 +767,393 @@ function AddTenantModal({ visible, onClose, onSubmit, availableBeds }: { visible
   );
 }
 
+function InfoLine({ label, value }: { label: string; value?: string | number }) {
+  return (
+    <View style={styles.infoLine}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value || 'Not added'}</Text>
+    </View>
+  );
+}
+
+function EditTenantModal({
+  tenant,
+  visible,
+  onClose,
+  onSubmit,
+  availableBeds,
+}: {
+  tenant?: Tenant;
+  visible: boolean;
+  onClose: () => void;
+  onSubmit: (input: UpdateTenantInput) => Promise<void>;
+  availableBeds: string[];
+}) {
+  const [name, setName] = useState('');
+  const [mobile, setMobile] = useState('');
+  const [emergencyContact, setEmergencyContact] = useState('');
+  const [aadhaarNumber, setAadhaarNumber] = useState('');
+  const [companyCollege, setCompanyCollege] = useState('');
+  const [joiningDate, setJoiningDate] = useState('');
+  const [roomBed, setRoomBed] = useState('');
+  const [rent, setRent] = useState('');
+  const [deposit, setDeposit] = useState('');
+  const [foodIncluded, setFoodIncluded] = useState(true);
+  const [rentDueDay, setRentDueDay] = useState('5');
+  const [status, setStatus] = useState<'Active' | 'Vacated'>('Active');
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (!tenant) return;
+    setName(tenant.name);
+    setMobile(tenant.mobile);
+    setEmergencyContact(tenant.emergencyContact ?? '');
+    setAadhaarNumber(tenant.aadhaarNumber ?? '');
+    setCompanyCollege(tenant.companyCollege ?? '');
+    setJoiningDate(tenant.joiningDate ?? new Date().toISOString().slice(0, 10));
+    setRoomBed(tenant.room === 'Unassigned' ? '' : tenant.room);
+    setRent(String(tenant.rent || 0));
+    setDeposit(String(tenant.deposit ?? 0));
+    setFoodIncluded(Boolean(tenant.foodIncluded));
+    setRentDueDay(String(tenant.rentDueDay ?? 5));
+    setStatus(tenant.admissionStatus ?? 'Active');
+    setFormError(undefined);
+  }, [tenant?.id]);
+
+  const handleSubmit = async () => {
+    if (!tenant?.id) return;
+    const digits = mobile.replace(/\D/g, '');
+    if (!name.trim()) {
+      setFormError('Full name is required.');
+      return;
+    }
+    if (digits.length !== 10) {
+      setFormError('Mobile number must be 10 digits.');
+      return;
+    }
+    if (aadhaarNumber && aadhaarNumber.replace(/\D/g, '').length !== 12) {
+      setFormError('Aadhaar number should be 12 digits if entered.');
+      return;
+    }
+    if (Number(rent || 0) <= 0) {
+      setFormError('Rent must be greater than 0.');
+      return;
+    }
+    if (Number(deposit || 0) < 0) {
+      setFormError('Deposit cannot be negative.');
+      return;
+    }
+
+    setSaving(true);
+    setFormError(undefined);
+    try {
+      await onSubmit({
+        id: tenant.id,
+        name: name.trim(),
+        mobile: mobile.trim(),
+        emergencyContact: emergencyContact.trim(),
+        aadhaarNumber: aadhaarNumber.trim(),
+        companyCollege: companyCollege.trim(),
+        joiningDate: joiningDate.trim(),
+        roomBed: roomBed.trim(),
+        rent: Number(rent || 0),
+        deposit: Number(deposit || 0),
+        foodIncluded,
+        rentDueDay: Number(rentDueDay || 5),
+        status,
+      });
+      onClose();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Unable to update tenant.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const bedOptions = Array.from(new Set([tenant?.room, ...availableBeds].filter(Boolean))) as string[];
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <View style={styles.modalHeader}>
+            <View><Text style={styles.modalTitle}>Edit tenant</Text><Text style={styles.subtitle}>Update profile, stay and rent details</Text></View>
+            <TouchableOpacity onPress={onClose}><AppIcon name="close" size={23} color={colors.ink} /></TouchableOpacity>
+          </View>
+          <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>FULL NAME</Text><TextInput style={styles.fieldInput} value={name} onChangeText={setName} /></View>
+            </View>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>MOBILE NUMBER</Text><TextInput style={styles.fieldInput} value={mobile} onChangeText={setMobile} keyboardType="phone-pad" /></View>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>ROOM / BED</Text><TextInput style={styles.fieldInput} value={roomBed} onChangeText={setRoomBed} /></View>
+            </View>
+            <View style={styles.availableBedBox}>
+              <Text style={styles.fieldLabel}>AVAILABLE BEDS</Text>
+              <View style={styles.availableBedRow}>
+                {bedOptions.map((bedNumber) => (
+                  <TouchableOpacity key={bedNumber} style={[styles.availableBedChip, roomBed === bedNumber && styles.availableBedChipActive]} onPress={() => setRoomBed(bedNumber)}>
+                    <Text style={[styles.availableBedText, roomBed === bedNumber && styles.availableBedTextActive]}>{bedNumber}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>EMERGENCY CONTACT</Text><TextInput style={styles.fieldInput} value={emergencyContact} onChangeText={setEmergencyContact} keyboardType="phone-pad" /></View>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>AADHAAR NUMBER</Text><TextInput style={styles.fieldInput} value={aadhaarNumber} onChangeText={setAadhaarNumber} keyboardType="numeric" /></View>
+            </View>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>COMPANY / COLLEGE</Text><TextInput style={styles.fieldInput} value={companyCollege} onChangeText={setCompanyCollege} /></View>
+            </View>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>JOINING DATE</Text><TextInput style={styles.fieldInput} value={joiningDate} onChangeText={setJoiningDate} /></View>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>RENT DUE DATE</Text><TextInput style={styles.fieldInput} value={rentDueDay} onChangeText={setRentDueDay} keyboardType="numeric" /></View>
+            </View>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>MONTHLY RENT</Text><TextInput style={styles.fieldInput} value={rent} onChangeText={setRent} keyboardType="numeric" /></View>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>DEPOSIT</Text><TextInput style={styles.fieldInput} value={deposit} onChangeText={setDeposit} keyboardType="numeric" /></View>
+            </View>
+            <View style={styles.toggleRow}>
+              <Text style={styles.tenantName}>Food included</Text>
+              <View style={styles.segmentRow}>
+                {(['Yes', 'No'] as const).map((item) => (
+                  <TouchableOpacity key={item} style={[styles.segmentChip, (foodIncluded ? item === 'Yes' : item === 'No') && styles.segmentChipActive]} onPress={() => setFoodIncluded(item === 'Yes')}>
+                    <Text style={[styles.segmentText, (foodIncluded ? item === 'Yes' : item === 'No') && styles.segmentTextActive]}>{item}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            <View style={styles.toggleRow}>
+              <Text style={styles.tenantName}>Status</Text>
+              <View style={styles.segmentRow}>
+                {(['Active', 'Vacated'] as const).map((item) => (
+                  <TouchableOpacity key={item} style={[styles.segmentChip, status === item && styles.segmentChipActive]} onPress={() => setStatus(item)}>
+                    <Text style={[styles.segmentText, status === item && styles.segmentTextActive]}>{item}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            {formError ? <Text style={styles.authError}>{formError}</Text> : null}
+            <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit} disabled={saving}><Text style={styles.primaryButtonText}>{saving ? 'Saving...' : 'Save changes'}</Text></TouchableOpacity>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function VacateTenantModal({ tenant, visible, onClose, onSubmit, pendingRent }: { tenant?: Tenant; visible: boolean; onClose: () => void; onSubmit: (input: VacateTenantInput) => Promise<void>; pendingRent: number }) {
+  const [vacateDate, setVacateDate] = useState(new Date().toISOString().slice(0, 10));
+  const [damageCharges, setDamageCharges] = useState('0');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const deposit = tenant?.deposit ?? 0;
+  const refundAmount = Math.max(deposit - Number(damageCharges || 0) - pendingRent, 0);
+
+  useEffect(() => {
+    if (tenant) {
+      setVacateDate(new Date().toISOString().slice(0, 10));
+      setDamageCharges('0');
+      setNotes('');
+      setError(undefined);
+    }
+  }, [tenant?.id]);
+
+  const handleSubmit = async () => {
+    if (!tenant?.id) return;
+    setSaving(true);
+    setError(undefined);
+    try {
+      await onSubmit({
+        tenantId: tenant.id,
+        vacateDate,
+        depositAmount: deposit,
+        damageCharges: Number(damageCharges || 0),
+        pendingRent,
+        refundAmount,
+        notes: notes.trim(),
+      });
+      onClose();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Unable to vacate tenant.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <View style={styles.modalHeader}>
+            <View><Text style={styles.modalTitle}>Vacate tenant</Text><Text style={styles.subtitle}>{tenant?.name ?? 'Tenant'} settlement</Text></View>
+            <TouchableOpacity onPress={onClose}><AppIcon name="close" size={23} color={colors.ink} /></TouchableOpacity>
+          </View>
+          <View style={styles.formRow}>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>VACATE DATE</Text><TextInput style={styles.fieldInput} value={vacateDate} onChangeText={setVacateDate} /></View>
+          </View>
+          <View style={styles.formRow}>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>DAMAGE CHARGES</Text><TextInput style={styles.fieldInput} value={damageCharges} onChangeText={setDamageCharges} keyboardType="numeric" /></View>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>PENDING RENT</Text><Text style={styles.fieldInput}>{money(pendingRent)}</Text></View>
+          </View>
+          <View style={styles.settlementBox}>
+            <InfoLine label="Deposit amount" value={money(deposit)} />
+            <InfoLine label="Refund amount" value={money(refundAmount)} />
+          </View>
+          <View style={styles.formRow}>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>NOTES</Text><TextInput style={styles.fieldInput} value={notes} onChangeText={setNotes} placeholder="Optional" /></View>
+          </View>
+          {error ? <Text style={styles.authError}>{error}</Text> : null}
+          <TouchableOpacity style={[styles.primaryButton, styles.dangerButton]} onPress={handleSubmit} disabled={saving}><Text style={styles.primaryButtonText}>{saving ? 'Saving...' : 'Confirm vacate'}</Text></TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function TenantDetail({
+  tenant,
+  data,
+  onBack,
+  onUpdateTenant,
+  onVacateTenant,
+  onRecordPayment,
+  onGenerateRent,
+}: {
+  tenant: Tenant;
+  data: PgMasterData;
+  onBack: () => void;
+  onUpdateTenant: (input: UpdateTenantInput) => Promise<void>;
+  onVacateTenant: (input: VacateTenantInput) => Promise<void>;
+  onRecordPayment: (input: RecordRentPaymentInput) => Promise<void>;
+  onGenerateRent: () => Promise<void>;
+}) {
+  const [editOpen, setEditOpen] = useState(false);
+  const [vacateOpen, setVacateOpen] = useState(false);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [message, setMessage] = useState<string | undefined>();
+  const tenantBills = (data.rentBills ?? []).filter((bill) => bill.tenantId === tenant.id);
+  const currentBill = tenantBills[0];
+  const pendingRent = currentBill?.pendingAmount ?? (tenant.status === 'Paid' ? 0 : tenant.rent);
+  const missingDocs = tenantDocumentTypes.filter((type) => !(tenant.documents ?? []).some((document) => document.type === documentTypeLabel(type)));
+
+  const openWhatsApp = (template: 'rent' | 'pending' | 'paid') => {
+    const amount = template === 'paid' ? (currentBill?.paidAmount ?? tenant.rent) : pendingRent;
+    const dueDate = currentBill?.dueDate ?? `day ${tenant.rentDueDay ?? 5}`;
+    const text = template === 'paid'
+      ? `Hi ${tenant.name}, we received your rent payment of ${money(amount)}. Thank you. - PGCopilot`
+      : template === 'pending'
+        ? `Hi ${tenant.name}, your pending rent is ${money(amount)}. Please complete the payment. - PGCopilot`
+        : `Hi ${tenant.name}, your PG rent of ${money(amount)} is due on ${dueDate}. Please pay before due date. - PGCopilot`;
+    Linking.openURL(`https://wa.me/${whatsappPhone(tenant.mobile)}?text=${encodeURIComponent(text)}`);
+  };
+
+  const handleGenerateRent = async () => {
+    setMessage(undefined);
+    await onGenerateRent();
+    setMessage('Rent bill generated. Reopen tenant if it does not appear immediately.');
+  };
+
+  return (
+    <>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <TouchableOpacity style={styles.backLink} onPress={onBack}><AppIcon name="chevron-left" size={22} color={colors.green} /><Text style={styles.backText}>Back to tenants</Text></TouchableOpacity>
+        <View style={styles.detailHeader}>
+          <View style={[styles.detailAvatar, { backgroundColor: tenant.tone }]}><Text style={styles.detailAvatarText}>{tenant.initials}</Text></View>
+          <View style={styles.flex}>
+            <Text style={styles.pageTitle}>{tenant.name}</Text>
+            <Text style={styles.subtitle}>{tenant.mobile}</Text>
+            <Text style={styles.subtitle}>Room {tenant.room} {tenant.floor ? `- ${tenant.floor}` : ''}</Text>
+          </View>
+          <View style={styles.alignEnd}>
+            <Chip label={tenant.admissionStatus ?? 'Active'} tone={tenant.admissionStatus === 'Vacated' ? 'red' : 'green'} />
+            <Chip label={tenant.status} tone={tenant.status === 'Paid' ? 'green' : tenant.status === 'Partial' ? 'orange' : 'red'} />
+          </View>
+        </View>
+        <View style={styles.actionGrid}>
+          <TouchableOpacity style={styles.actionButton} onPress={() => Linking.openURL(`tel:${tenant.mobile}`)}><AppIcon name="phone-outline" /><Text style={styles.actionText}>Call</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.actionButton} onPress={() => openWhatsApp('rent')}><AppIcon name="whatsapp" /><Text style={styles.actionText}>WhatsApp</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.actionButton} onPress={() => setEditOpen(true)}><AppIcon name="pencil-outline" /><Text style={styles.actionText}>Edit</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.actionButton} onPress={() => setVacateOpen(true)}><AppIcon name="logout-variant" color={colors.red} /><Text style={[styles.actionText, { color: colors.red }]}>Vacate</Text></TouchableOpacity>
+        </View>
+
+        <SectionTitle title="Personal details" />
+        <View style={styles.listCard}>
+          <InfoLine label="Full name" value={tenant.name} />
+          <InfoLine label="Mobile number" value={tenant.mobile} />
+          <InfoLine label="Emergency contact" value={tenant.emergencyContact} />
+          <InfoLine label="Aadhaar number" value={maskAadhaar(tenant.aadhaarNumber)} />
+          <InfoLine label="Company / College" value={tenant.companyCollege} />
+          <InfoLine label="Food included" value={tenant.foodIncluded ? 'Yes' : 'No'} />
+        </View>
+
+        <SectionTitle title="Stay details" />
+        <View style={styles.listCard}>
+          <InfoLine label="Hostel" value={data.propertyName} />
+          <InfoLine label="Room / Bed" value={tenant.room} />
+          <InfoLine label="Floor" value={tenant.floor} />
+          <InfoLine label="Monthly rent" value={money(tenant.rent)} />
+          <InfoLine label="Deposit amount" value={money(tenant.deposit ?? 0)} />
+          <InfoLine label="Rent due date" value={`Day ${tenant.rentDueDay ?? 5}`} />
+          <InfoLine label="Joining date" value={tenant.joiningDate} />
+          {tenant.vacateDate ? <InfoLine label="Vacate date" value={tenant.vacateDate} /> : null}
+        </View>
+
+        <SectionTitle title="Current rent" action={currentBill ? currentBill.status : 'No bill'} />
+        <View style={styles.rentHero}>
+          <Text style={styles.cardEyebrow}>EXPECTED RENT</Text>
+          <Text style={styles.rentHeroValue}>{money(currentBill?.amount ?? tenant.rent)}</Text>
+          <View style={styles.rentHeroBottom}><Text style={styles.rentHeroCaption}>Paid {money(currentBill?.paidAmount ?? 0)}</Text><Text style={styles.rentHeroPending}>Pending {money(pendingRent)}</Text></View>
+          <View style={styles.detailButtonRow}>
+            {currentBill ? <TouchableOpacity style={styles.secondaryButton} onPress={() => setPaymentOpen(true)}><Text style={styles.secondaryButtonText}>Add payment</Text></TouchableOpacity> : <TouchableOpacity style={styles.secondaryButton} onPress={handleGenerateRent}><Text style={styles.secondaryButtonText}>Generate rent bill</Text></TouchableOpacity>}
+            <TouchableOpacity style={styles.secondaryButton} onPress={() => openWhatsApp('pending')}><Text style={styles.secondaryButtonText}>Reminder</Text></TouchableOpacity>
+          </View>
+          {message ? <Text style={styles.inviteMessage}>{message}</Text> : null}
+        </View>
+
+        <SectionTitle title="Payment history" action={`${tenantBills.reduce((sum, bill) => sum + bill.receipts.length, 0)} receipts`} />
+        <View style={styles.listCard}>
+          {tenantBills.flatMap((bill) => bill.receipts.map((receipt) => ({ bill, receipt }))).length ? tenantBills.flatMap((bill) => bill.receipts.map((receipt) => ({ bill, receipt }))).map(({ bill, receipt }) => (
+            <TouchableOpacity key={receipt.id} style={[styles.activity, styles.divider]} onPress={() => downloadReceiptPdf(data, bill, receipt)}>
+              <AppIcon name="file-document-outline" size={18} color={colors.green} />
+              <View style={styles.flex}><Text style={styles.tenantName}>{receipt.receiptNumber}</Text><Text style={styles.activityCaption}>{new Date(receipt.paymentDate).toLocaleDateString('en-IN')} - {receipt.paymentMode} - {receipt.notes || 'No notes'}</Text></View>
+              <Text style={styles.rentAmount}>{money(receipt.amount)}</Text>
+            </TouchableOpacity>
+          )) : <Text style={styles.activityCaption}>No payment history yet.</Text>}
+        </View>
+
+        <SectionTitle title="Documents" action={`${tenant.documentCount ?? 0}/${tenantDocumentTypes.length}`} />
+        <View style={styles.documentGrid}>
+          {tenantDocumentTypes.map((type) => {
+            const document = (tenant.documents ?? []).find((item) => item.type === documentTypeLabel(type));
+            return (
+              <View key={type} style={styles.documentButton}>
+                <AppIcon name={document ? 'check-circle-outline' : 'alert-circle-outline'} size={18} color={document ? colors.green : colors.orange} />
+                <View style={styles.flex}><Text style={styles.documentTitle}>{type}</Text><Text style={styles.activityCaption}>{document?.fileName ?? `${type} missing`}</Text></View>
+              </View>
+            );
+          })}
+        </View>
+        {missingDocs.length ? <Text style={styles.authError}>{missingDocs.join(', ')} missing</Text> : null}
+
+        <SectionTitle title="Activity timeline" />
+        <View style={styles.listCard}>
+          <Activity icon="account-plus-outline" tone="green" title="Tenant admitted" caption={tenant.joiningDate || 'Admission date not added'} />
+          {currentBill?.receipts[0] ? <Activity icon="cash-check" tone="blue" title="Rent paid" caption={`${money(currentBill.receipts[0].amount)} - ${currentBill.receipts[0].receiptNumber}`} /> : null}
+          {tenant.vacateDate ? <Activity icon="logout-variant" tone="red" title="Tenant vacated" caption={tenant.vacateDate} last /> : null}
+        </View>
+      </ScrollView>
+      <EditTenantModal tenant={tenant} visible={editOpen} onClose={() => setEditOpen(false)} onSubmit={onUpdateTenant} availableBeds={data.assignableBeds ?? []} />
+      <VacateTenantModal tenant={tenant} visible={vacateOpen} onClose={() => setVacateOpen(false)} onSubmit={onVacateTenant} pendingRent={pendingRent} />
+      <PaymentModal visible={paymentOpen} bill={currentBill} onClose={() => setPaymentOpen(false)} onSubmit={onRecordPayment} />
+    </>
+  );
+}
+
 function receiptHtml(data: PgMasterData, bill: RentBill, receipt: RentReceipt) {
   return `
     <html>
@@ -720,6 +1202,7 @@ function PaymentModal({
   onSubmit: (input: RecordRentPaymentInput) => Promise<void>;
 }) {
   const [amount, setAmount] = useState('');
+  const [paymentDate, setPaymentDate] = useState(new Date().toISOString().slice(0, 10));
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('UPI');
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -728,6 +1211,7 @@ function PaymentModal({
   useEffect(() => {
     if (bill) {
       setAmount(String(bill.pendingAmount || bill.amount));
+      setPaymentDate(new Date().toISOString().slice(0, 10));
       setPaymentMode('UPI');
       setNotes('');
       setError(undefined);
@@ -747,6 +1231,7 @@ function PaymentModal({
       await onSubmit({
         rentPaymentId: bill.id,
         amount: paymentAmount,
+        paymentDate,
         paymentMode,
         notes: notes.trim(),
       });
@@ -769,6 +1254,7 @@ function PaymentModal({
           </View>
           <View style={styles.formRow}>
             <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>AMOUNT</Text><TextInput placeholder="0" style={styles.fieldInput} value={amount} onChangeText={setAmount} keyboardType="numeric" /></View>
+            <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>PAYMENT DATE</Text><TextInput placeholder="YYYY-MM-DD" style={styles.fieldInput} value={paymentDate} onChangeText={setPaymentDate} /></View>
           </View>
           <View style={styles.toggleRow}>
             <Text style={styles.tenantName}>Payment mode</Text>
@@ -1213,6 +1699,18 @@ export default function App() {
     setDataError(undefined);
   };
 
+  const handleUpdateTenant = async (input: UpdateTenantInput) => {
+    const nextData = await saveTenantUpdate(input, pgData);
+    setPgData(nextData);
+    setDataError(undefined);
+  };
+
+  const handleVacateTenant = async (input: VacateTenantInput) => {
+    const nextData = await saveTenantVacate(input, pgData);
+    setPgData(nextData);
+    setDataError(undefined);
+  };
+
   const handleSendOtp = async (phone: string) => {
     if (!supabase) return;
     setAuthLoading(true);
@@ -1299,7 +1797,7 @@ export default function App() {
 
   const content = useMemo(() => {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
-    if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} />;
+    if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} onUpdateTenant={handleUpdateTenant} onVacateTenant={handleVacateTenant} onRecordPayment={handleRecordPayment} onGenerateRent={handleGenerateRent} />;
     if (tab === 'Rent') return <Rent data={pgData} onGenerateRent={handleGenerateRent} onRecordPayment={handleRecordPayment} />;
     if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onLogout={handleLogout} />;
     return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} onSelectHostel={handleSelectHostel} onCreateHostel={handleCreateHostel} />;
@@ -1381,6 +1879,7 @@ const styles = StyleSheet.create({
   searchPlaceholder: { flex: 1, color: colors.muted, fontSize: 13 },
   searchInput: { flex: 1, fontSize: 13, color: colors.ink, outlineStyle: 'none' } as any,
   filterRow: { flexDirection: 'row', gap: 7, marginBottom: 15 },
+  filterScroller: { marginBottom: 13 },
   filterChip: { paddingVertical: 8, paddingHorizontal: 13, borderWidth: 1, borderColor: colors.line, borderRadius: 18, backgroundColor: colors.card },
   filterChipActive: { backgroundColor: colors.green, borderColor: colors.green },
   filterText: { fontSize: 11, fontWeight: '700', color: colors.muted },
@@ -1407,6 +1906,19 @@ const styles = StyleSheet.create({
   avatar: { width: 39, height: 39, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   avatarText: { fontSize: 11, fontWeight: '800', color: colors.ink },
   tenantName: { color: colors.ink, fontWeight: '700', fontSize: 13 },
+  backLink: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', marginBottom: 14 },
+  backText: { color: colors.green, fontWeight: '800', fontSize: 12 },
+  detailHeader: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 15, flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
+  detailAvatar: { width: 58, height: 58, borderRadius: 29, alignItems: 'center', justifyContent: 'center' },
+  detailAvatarText: { color: colors.ink, fontWeight: '900', fontSize: 18 },
+  actionGrid: { flexDirection: 'row', gap: 8, marginBottom: 20 },
+  actionButton: { flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 13, paddingVertical: 10, alignItems: 'center', gap: 4 },
+  actionText: { color: colors.green, fontWeight: '800', fontSize: 10 },
+  infoLine: { padding: 13, borderBottomWidth: 1, borderBottomColor: colors.line },
+  infoValue: { color: colors.ink, fontWeight: '700', fontSize: 13, marginTop: 5 },
+  detailButtonRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  settlementBox: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 12, marginBottom: 10, overflow: 'hidden' },
+  dangerButton: { backgroundColor: colors.red },
   fab: { position: 'absolute', right: 21, bottom: 18, width: 55, height: 55, borderRadius: 28, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.16, shadowRadius: 8, elevation: 4 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', justifyContent: 'flex-end' },
   modalSheet: { backgroundColor: colors.bg, borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: 20, paddingBottom: 28 },
