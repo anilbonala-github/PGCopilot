@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Image,
+  InputAccessoryView,
+  Keyboard,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
@@ -11,6 +14,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
@@ -67,6 +71,8 @@ const colors = {
   purple: '#7657AF',
   palePurple: '#F0EBFA',
 };
+
+const loginKeyboardAccessoryId = 'pgcopilot-login-keyboard-actions';
 
 const money = (value: number) =>
   `₹${value.toLocaleString('en-IN')}`;
@@ -1569,6 +1575,7 @@ function Login({
   const [otpSent, setOtpSent] = useState(false);
 
   const handleAuthPress = async () => {
+    Keyboard.dismiss();
     if (!authEnabled) {
       onDemoLogin();
       return;
@@ -1584,36 +1591,67 @@ function Login({
 
   return (
     <SafeAreaView style={styles.loginScreen}>
-      <View style={styles.loginTop}>
-        <Image source={pgcopilotLogo} style={styles.logoImage} resizeMode="contain" />
-        <Text style={styles.logoText}>
-          <Text style={styles.logoTextBlue}>PG</Text>
-          <Text style={styles.logoTextGreen}>Copilot</Text>
-        </Text>
-        <Text style={styles.loginTagline}>Where Tenants Find and Owners Thrive</Text>
-      </View>
-      <View style={styles.loginCard}>
-        <Text style={styles.loginTitle}>Welcome back</Text>
-        <Text style={styles.loginCaption}>{authEnabled ? 'Sign in with mobile OTP' : 'Demo mode because Supabase keys are missing'}</Text>
-        <Text style={styles.loginFieldLabel}>MOBILE NUMBER</Text>
-        <View style={styles.loginInput}>
-          <Text style={styles.prefix}>+91</Text>
-          <TextInput style={styles.flex} placeholder="Enter mobile number" keyboardType="phone-pad" value={phone} onChangeText={setPhone} />
-        </View>
-        {otpSent ? (
-          <>
-            <Text style={[styles.loginFieldLabel, styles.otpLabel]}>OTP CODE</Text>
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.loginKeyboardContent}>
+          <View style={styles.loginTop}>
+            <Image source={pgcopilotLogo} style={styles.logoImage} resizeMode="contain" />
+            <Text style={styles.logoText}>
+              <Text style={styles.logoTextBlue}>PG</Text>
+              <Text style={styles.logoTextGreen}>Copilot</Text>
+            </Text>
+            <Text style={styles.loginTagline}>Where Tenants Find and Owners Thrive</Text>
+          </View>
+          <View style={styles.loginCard}>
+            <Text style={styles.loginTitle}>Welcome back</Text>
+            <Text style={styles.loginCaption}>{authEnabled ? 'Sign in with mobile OTP' : 'Demo mode because Supabase keys are missing'}</Text>
+            <Text style={styles.loginFieldLabel}>MOBILE NUMBER</Text>
             <View style={styles.loginInput}>
-              <TextInput style={styles.flex} placeholder="Enter OTP" keyboardType="number-pad" value={otp} onChangeText={setOtp} />
+              <Text style={styles.prefix}>+91</Text>
+              <TextInput
+                style={styles.flex}
+                placeholder="Enter mobile number"
+                keyboardType="phone-pad"
+                value={phone}
+                onChangeText={setPhone}
+                inputAccessoryViewID={Platform.OS === 'ios' ? loginKeyboardAccessoryId : undefined}
+                onSubmitEditing={Keyboard.dismiss}
+                returnKeyType="done"
+              />
             </View>
-          </>
-        ) : null}
-        {error ? <Text style={styles.authError}>{error}</Text> : null}
-        <TouchableOpacity style={styles.primaryButton} onPress={handleAuthPress} disabled={loading}>
-          <Text style={styles.primaryButtonText}>{loading ? 'Please wait...' : authEnabled ? otpSent ? 'Verify OTP' : 'Send OTP' : 'Continue demo'}</Text>
-        </TouchableOpacity>
-        <Text style={styles.loginSecurityHint}>{authEnabled ? 'Secure access for PG owners and staff' : 'Connect Supabase to enable production login'}</Text>
-      </View>
+            {otpSent ? (
+              <>
+                <Text style={[styles.loginFieldLabel, styles.otpLabel]}>OTP CODE</Text>
+                <View style={styles.loginInput}>
+                  <TextInput
+                    style={styles.flex}
+                    placeholder="Enter OTP"
+                    keyboardType="number-pad"
+                    value={otp}
+                    onChangeText={setOtp}
+                    inputAccessoryViewID={Platform.OS === 'ios' ? loginKeyboardAccessoryId : undefined}
+                    onSubmitEditing={Keyboard.dismiss}
+                    returnKeyType="done"
+                  />
+                </View>
+              </>
+            ) : null}
+            {error ? <Text style={styles.authError}>{error}</Text> : null}
+            <TouchableOpacity style={styles.primaryButton} onPress={handleAuthPress} disabled={loading}>
+              <Text style={styles.primaryButtonText}>{loading ? 'Please wait...' : authEnabled ? otpSent ? 'Verify OTP' : 'Send OTP' : 'Continue demo'}</Text>
+            </TouchableOpacity>
+            <Text style={styles.loginSecurityHint}>{authEnabled ? 'Secure access for PG owners and staff' : 'Connect Supabase to enable production login'}</Text>
+          </View>
+        </KeyboardAvoidingView>
+      </TouchableWithoutFeedback>
+      {Platform.OS === 'ios' ? (
+        <InputAccessoryView nativeID={loginKeyboardAccessoryId}>
+          <View style={styles.keyboardAccessory}>
+            <TouchableOpacity onPress={Keyboard.dismiss} style={styles.keyboardDoneButton}>
+              <Text style={styles.keyboardDoneText}>Done</Text>
+            </TouchableOpacity>
+          </View>
+        </InputAccessoryView>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -2059,6 +2097,7 @@ const styles = StyleSheet.create({
   navText: { color: colors.muted, fontSize: 9.5, fontWeight: '700' },
   navTextActive: { color: colors.green },
   loginScreen: { flex: 1, backgroundColor: colors.bg, justifyContent: 'space-between', padding: 22 },
+  loginKeyboardContent: { flex: 1, justifyContent: 'space-between' },
   loginTop: { flex: 1, paddingTop: 54, alignItems: 'center' },
   logoImage: { width: 260, height: 188 },
   logoText: { fontSize: 32, fontWeight: '900', letterSpacing: -1.2, marginTop: -6 },
@@ -2075,6 +2114,9 @@ const styles = StyleSheet.create({
   prefix: { color: colors.ink, fontWeight: '700', paddingRight: 10, borderRightWidth: 1, borderRightColor: colors.line },
   authError: { color: colors.red, fontSize: 12, fontWeight: '700', marginTop: 10 },
   loginSecurityHint: { color: colors.muted, textAlign: 'center', fontSize: 11, marginTop: 14 },
+  keyboardAccessory: { height: 44, backgroundColor: '#F4F5F7', borderTopWidth: 1, borderTopColor: colors.line, alignItems: 'flex-end', justifyContent: 'center', paddingHorizontal: 16 },
+  keyboardDoneButton: { paddingHorizontal: 10, paddingVertical: 8 },
+  keyboardDoneText: { color: colors.green, fontSize: 16, fontWeight: '800' },
   inviteCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 14, marginBottom: 20 },
   inviteMessage: { color: colors.green, fontSize: 12, fontWeight: '700', marginTop: 10 },
   hostelOption: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 13 },
