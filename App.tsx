@@ -330,8 +330,8 @@ function Dashboard({
             key={activity.id}
             icon={activityIcon(activity.activityType)}
             tone={activityTone(activity.activityType)}
-            title={activity.description}
-            caption={activityCaption(activity.createdAt)}
+            title={activityTitle(activity)}
+            caption={activityDetail(activity)}
             last={index === all.length - 1}
           />
         )) : (
@@ -1087,6 +1087,27 @@ function activityCaption(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('en-IN');
 }
 
+function activityTitle(activity: TenantActivity) {
+  const tenantName = activity.tenantName ?? 'Tenant';
+  if (activity.activityType === 'payment_received') return `Rent received from ${tenantName}`;
+  if (activity.activityType === 'rent_generated') return `Rent bill generated for ${tenantName}`;
+  if (activity.activityType === 'document_upload') return `${tenantName}: ${activity.description}`;
+  if (activity.activityType === 'tenant_update') return `${tenantName} profile updated`;
+  if (activity.activityType === 'vacate') return `${tenantName} vacated`;
+  if (activity.activityType === 'admission') return `${tenantName} admitted`;
+  return activity.description;
+}
+
+function activityDetail(activity: TenantActivity) {
+  const details: string[] = [];
+  if (activity.room) details.push(`Room ${activity.room}`);
+  if (activity.amount) details.push(money(activity.amount));
+  if (activity.paymentMode) details.push(activity.paymentMode);
+  if (activity.receiptNumber) details.push(activity.receiptNumber);
+  details.push(activityCaption(activity.createdAt));
+  return details.join(' - ');
+}
+
 function VacateTenantModal({ tenant, visible, onClose, onSubmit, pendingRent }: { tenant?: Tenant; visible: boolean; onClose: () => void; onSubmit: (input: VacateTenantInput) => Promise<void>; pendingRent: number }) {
   const [vacateDate, setVacateDate] = useState(new Date().toISOString().slice(0, 10));
   const [damageCharges, setDamageCharges] = useState('0');
@@ -1292,8 +1313,8 @@ function TenantDetail({
               key={activity.id}
               icon={activityIcon(activity.activityType)}
               tone={activityTone(activity.activityType)}
-              title={activity.description}
-              caption={activityCaption(activity.createdAt)}
+              title={activityTitle(activity)}
+              caption={activityDetail(activity)}
               last={index === all.length - 1}
             />
           )) : (

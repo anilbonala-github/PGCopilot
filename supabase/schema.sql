@@ -719,14 +719,15 @@ begin
   returning * into receipt;
 
   insert into public.tenant_activity (owner_id, hostel_id, created_by, tenant_id, activity_type, description)
-  values (
+  select
     bill.owner_id,
     bill.hostel_id,
     auth.uid(),
     bill.tenant_id,
     'payment_received',
-    'Payment received: ' || receipt.receipt_number || ' for ' || payment_amount::text
-  );
+    'Rent received from ' || coalesce(t.full_name, 'tenant') || ': ' || receipt.receipt_number || ' - ' || payment_mode_value || ' - ' || payment_amount::text
+  from public.tenants t
+  where t.id = bill.tenant_id;
 
   update public.rent_payments
   set paid_amount = next_paid_amount,

@@ -89,6 +89,11 @@ export type TenantActivity = {
   activityType: 'admission' | 'tenant_update' | 'vacate' | 'document_upload' | 'rent_generated' | 'payment_received';
   description: string;
   createdAt: string;
+  tenantName?: string;
+  room?: string;
+  amount?: number;
+  receiptNumber?: string;
+  paymentMode?: PaymentMode;
 };
 
 export type PgMasterData = {
@@ -445,7 +450,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       .order('due_date', { ascending: false }),
     supabase
       .from('tenant_activity')
-      .select('id,tenant_id,activity_type,description,created_at')
+      .select('id,tenant_id,activity_type,description,created_at,tenants(full_name,beds(bed_number))')
       .eq('hostel_id', hostel.id)
       .order('created_at', { ascending: false })
       .limit(100),
@@ -560,13 +565,38 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
     };
   });
 
-  const tenantActivities: TenantActivity[] = (tenantActivityResult.data ?? []).map((activity: any) => ({
-    id: activity.id,
-    tenantId: activity.tenant_id,
-    activityType: activity.activity_type,
-    description: activity.description,
-    createdAt: activity.created_at,
-  }));
+  const tenantById = new Map(tenants.map((tenant) => [tenant.id, tenant]));
+  const receiptByTenantAndNumber = new Map<string, RentReceipt>();
+  const latestReceiptByTenant = new Map<string, RentReceipt>();
+  rentBills.forEach((bill) => {
+    bill.receipts.forEach((receipt) => {
+      receiptByTenantAndNumber.set(`${bill.tenantId}:${receipt.receiptNumber}`, receipt);
+      const current = latestReceiptByTenant.get(bill.tenantId);
+      if (!current || String(receipt.paymentDate).localeCompare(String(current.paymentDate)) > 0) {
+        latestReceiptByTenant.set(bill.tenantId, receipt);
+      }
+    });
+  });
+  const tenantActivities: TenantActivity[] = (tenantActivityResult.data ?? []).map((activity: any) => {
+    const joinedTenant = Array.isArray(activity.tenants) ? activity.tenants[0] : activity.tenants;
+    const tenant = tenantById.get(activity.tenant_id);
+    const receiptNumber = String(activity.description ?? '').match(/PGC-[A-Z0-9-]+/)?.[0];
+    const receipt = activity.activity_type === 'payment_received'
+      ? (receiptNumber ? receiptByTenantAndNumber.get(`${activity.tenant_id}:${receiptNumber}`) : undefined) ?? latestReceiptByTenant.get(activity.tenant_id)
+      : undefined;
+    return {
+      id: activity.id,
+      tenantId: activity.tenant_id,
+      activityType: activity.activity_type,
+      description: activity.description,
+      createdAt: activity.created_at,
+      tenantName: tenant?.name ?? joinedTenant?.full_name,
+      room: tenant?.room ?? joinedTenant?.beds?.bed_number,
+      amount: receipt?.amount,
+      receiptNumber: receipt?.receiptNumber,
+      paymentMode: receipt?.paymentMode,
+    };
+  });
 
   return {
     data: {
