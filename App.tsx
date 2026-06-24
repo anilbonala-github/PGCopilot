@@ -81,6 +81,14 @@ const whatsappPhone = (value: string) => {
   return digits.length === 10 ? `91${digits}` : digits;
 };
 
+const initialsForName = (name: string) =>
+  name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('') || 'PG';
+
 const pgcopilotLogo = require('./assets/login-mark.png');
 
 function AppIcon({ name, size = 20, color = colors.green }: { name: IconName; size?: number; color?: string }) {
@@ -100,6 +108,47 @@ function Chip({ label, tone = 'green' }: { label: string; tone?: Tone }) {
     <View style={[styles.chip, { backgroundColor: palette[tone][0] }]}>
       <Text style={[styles.chipText, { color: palette[tone][1] }]}>{label}</Text>
     </View>
+  );
+}
+
+function TenantAvatar({
+  initials,
+  name,
+  photoUrl,
+  tone,
+  size = 'list',
+  onPress,
+}: {
+  initials?: string;
+  name: string;
+  photoUrl?: string;
+  tone?: string;
+  size?: 'list' | 'detail';
+  onPress?: () => void;
+}) {
+  const dimension = size === 'detail' ? 58 : 39;
+  const content = (
+    <View style={[size === 'detail' ? styles.detailAvatar : styles.avatar, { backgroundColor: tone ?? colors.paleGreen }]}>
+      {photoUrl ? (
+        <Image source={{ uri: photoUrl }} style={{ width: dimension, height: dimension, borderRadius: dimension / 2 }} resizeMode="cover" />
+      ) : (
+        <Text style={size === 'detail' ? styles.detailAvatarText : styles.avatarText}>{initials || initialsForName(name)}</Text>
+      )}
+    </View>
+  );
+  return onPress ? <TouchableOpacity onPress={onPress}>{content}</TouchableOpacity> : content;
+}
+
+function ImagePreviewModal({ uri, onClose }: { uri?: string; onClose: () => void }) {
+  return (
+    <Modal visible={Boolean(uri)} animationType="fade" transparent>
+      <View style={styles.imagePreviewBackdrop}>
+        <View style={styles.imagePreviewCard}>
+          <TouchableOpacity style={styles.imagePreviewClose} onPress={onClose}><AppIcon name="close" size={22} color={colors.ink} /></TouchableOpacity>
+          {uri ? <Image source={{ uri }} style={styles.imagePreview} resizeMode="contain" /> : null}
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -536,7 +585,7 @@ function Tenants({
         <View style={styles.listCard}>
           {visibleTenants.map((tenant, index) => (
             <TouchableOpacity key={tenant.id ?? tenant.name} style={[styles.tenantRow, index !== visibleTenants.length - 1 && styles.divider]} onPress={() => setSelectedTenantId(tenant.id ?? tenant.name)}>
-              <View style={[styles.avatar, { backgroundColor: tenant.tone }]}><Text style={styles.avatarText}>{tenant.initials}</Text></View>
+              <TenantAvatar initials={tenant.initials} name={tenant.name} photoUrl={tenant.photoUrl} tone={tenant.tone} />
               <View style={styles.flex}>
                 <Text style={styles.tenantName}>{tenant.name}</Text>
                 <Text style={styles.activityCaption}>Room {tenant.room} - {tenant.mobile}</Text>
@@ -1035,6 +1084,7 @@ function TenantDetail({
   const [editOpen, setEditOpen] = useState(false);
   const [vacateOpen, setVacateOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState<string | undefined>();
   const [message, setMessage] = useState<string | undefined>();
   const tenantBills = (data.rentBills ?? []).filter((bill) => bill.tenantId === tenant.id);
   const currentBill = tenantBills[0];
@@ -1063,7 +1113,7 @@ function TenantDetail({
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         <TouchableOpacity style={styles.backLink} onPress={onBack}><AppIcon name="chevron-left" size={22} color={colors.green} /><Text style={styles.backText}>Back to tenants</Text></TouchableOpacity>
         <View style={styles.detailHeader}>
-          <View style={[styles.detailAvatar, { backgroundColor: tenant.tone }]}><Text style={styles.detailAvatarText}>{tenant.initials}</Text></View>
+          <TenantAvatar initials={tenant.initials} name={tenant.name} photoUrl={tenant.photoUrl} tone={tenant.tone} size="detail" onPress={tenant.photoUrl ? () => setPreviewPhoto(tenant.photoUrl) : undefined} />
           <View style={styles.flex}>
             <Text style={styles.pageTitle}>{tenant.name}</Text>
             <Text style={styles.subtitle}>{tenant.mobile}</Text>
@@ -1150,6 +1200,7 @@ function TenantDetail({
       <EditTenantModal tenant={tenant} visible={editOpen} onClose={() => setEditOpen(false)} onSubmit={onUpdateTenant} availableBeds={data.assignableBeds ?? []} />
       <VacateTenantModal tenant={tenant} visible={vacateOpen} onClose={() => setVacateOpen(false)} onSubmit={onVacateTenant} pendingRent={pendingRent} />
       <PaymentModal visible={paymentOpen} bill={currentBill} onClose={() => setPaymentOpen(false)} onSubmit={onRecordPayment} />
+      <ImagePreviewModal uri={previewPhoto} onClose={() => setPreviewPhoto(undefined)} />
     </>
   );
 }
@@ -1308,7 +1359,7 @@ function Rent({ data, onGenerateRent, onRecordPayment }: { data: PgMasterData; o
         <View style={styles.rentHeroBottom}><Text style={styles.rentHeroCaption}>{summary.expectedRent ? Math.round((summary.collectedRent / summary.expectedRent) * 100) : 0}% of {money(summary.expectedRent)}</Text><Text style={styles.rentHeroPending}>{money(summary.pendingRent)} pending</Text></View>
         <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${summary.expectedRent ? Math.round((summary.collectedRent / summary.expectedRent) * 100) : 0}%` }]} /></View>
       </View>
-      <TouchableOpacity style={styles.primaryButton} onPress={handleGenerate} disabled={generating}>
+      <TouchableOpacity style={[styles.primaryButton, styles.rentGenerateButton]} onPress={handleGenerate} disabled={generating}>
         <Text style={styles.primaryButtonText}>{generating ? 'Generating...' : 'Generate monthly rent'}</Text>
       </TouchableOpacity>
       {message ? <Text style={styles.inviteMessage}>{message}</Text> : null}
@@ -1321,12 +1372,15 @@ function Rent({ data, onGenerateRent, onRecordPayment }: { data: PgMasterData; o
       </View>
       <SectionTitle title="Rent bills" action={`${visibleBills.length} shown`} />
       <View style={styles.listCard}>
-        {visibleBills.length ? visibleBills.map((bill, index) => (
+        {visibleBills.length ? visibleBills.map((bill, index) => {
+          const billTenant = data.tenants.find((tenant) => tenant.id === bill.tenantId);
+          return (
           <View key={bill.id} style={[styles.rentBillRow, index !== visibleBills.length - 1 && styles.divider]}>
+            <TenantAvatar initials={billTenant?.initials || initialsForName(bill.tenantName)} name={bill.tenantName} photoUrl={billTenant?.photoUrl} tone={billTenant?.tone} />
             <View style={styles.flex}>
               <Text style={styles.tenantName}>{bill.tenantName}</Text>
-              <Text style={styles.activityCaption}>Room {bill.room} · Due {bill.dueDate}</Text>
-              <Text style={styles.activityCaption}>Paid {money(bill.paidAmount)} · Pending {money(bill.pendingAmount)}</Text>
+              <Text style={styles.activityCaption}>Room {bill.room} - Due {bill.dueDate}</Text>
+              <Text style={styles.activityCaption}>Paid {money(bill.paidAmount)} - Pending {money(bill.pendingAmount)}</Text>
               {bill.receipts.length ? (
                 <View style={styles.receiptList}>
                   {bill.receipts.map((receipt) => (
@@ -1344,7 +1398,8 @@ function Rent({ data, onGenerateRent, onRecordPayment }: { data: PgMasterData; o
               {bill.status !== 'Paid' ? <TouchableOpacity style={styles.smallActionButton} onPress={() => setSelectedBill(bill)}><Text style={styles.smallActionText}>Pay</Text></TouchableOpacity> : null}
             </View>
           </View>
-        )) : (
+          );
+        }) : (
           <View style={styles.rentRow}>
             <Text style={styles.activityCaption}>No rent bills generated yet. Tap Generate monthly rent to create bills for active tenants.</Text>
           </View>
@@ -1905,6 +1960,10 @@ const styles = StyleSheet.create({
   tenantRow: { flexDirection: 'row', gap: 11, alignItems: 'center', padding: 13 },
   avatar: { width: 39, height: 39, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   avatarText: { fontSize: 11, fontWeight: '800', color: colors.ink },
+  imagePreviewBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.62)', alignItems: 'center', justifyContent: 'center', padding: 22 },
+  imagePreviewCard: { width: '100%', maxWidth: 430, backgroundColor: colors.card, borderRadius: 18, padding: 14 },
+  imagePreviewClose: { alignSelf: 'flex-end', width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, marginBottom: 10 },
+  imagePreview: { width: '100%', height: 360, borderRadius: 13, backgroundColor: colors.bg },
   tenantName: { color: colors.ink, fontWeight: '700', fontSize: 13 },
   backLink: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', marginBottom: 14 },
   backText: { color: colors.green, fontWeight: '800', fontSize: 12 },
@@ -1937,6 +1996,7 @@ const styles = StyleSheet.create({
   availableBedText: { color: colors.green, fontWeight: '800', fontSize: 11 },
   availableBedTextActive: { color: '#FFF' },
   primaryButton: { backgroundColor: colors.green, height: 49, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 9 },
+  rentGenerateButton: { marginBottom: 16 },
   primaryButtonText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
   secondaryButton: { height: 44, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderWidth: 1, borderColor: colors.line },
   secondaryButtonText: { color: colors.ink, fontWeight: '800', fontSize: 13 },

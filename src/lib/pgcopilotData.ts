@@ -46,6 +46,7 @@ export type Tenant = {
   admissionStatus?: 'Active' | 'Vacated';
   documentCount?: number;
   documents?: TenantDocument[];
+  photoUrl?: string;
   status: RentStatus;
   tone: string;
 };
@@ -134,6 +135,7 @@ export type TenantDocument = {
   type: string;
   fileName: string;
   storagePath?: string;
+  fileUrl?: string;
   mimeType?: string;
 };
 
@@ -450,15 +452,24 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       .filter((bedNumber): bedNumber is string => Boolean(bedNumber))
   );
 
-  const tenants: Tenant[] = (tenantsResult.data ?? []).map((tenant: any, index: number) => {
+  const tenants: Tenant[] = await Promise.all((tenantsResult.data ?? []).map(async (tenant: any, index: number) => {
     const bedNumber = tenant.beds?.bed_number ?? 'Unassigned';
-    const documents = (tenant.tenant_documents ?? []).map((document: any) => ({
+    let documents: TenantDocument[] = (tenant.tenant_documents ?? []).map((document: any) => ({
       id: document.id,
       type: document.document_type,
       fileName: document.file_name,
       storagePath: document.storage_path,
       mimeType: document.mime_type,
     }));
+    const photoDocument = documents.find((document) => document.type === 'Photo' && document.storagePath);
+    let photoUrl: string | undefined;
+    if (photoDocument?.storagePath) {
+      const { data: signedPhoto } = await supabase!.storage
+        .from('tenant-documents')
+        .createSignedUrl(photoDocument.storagePath, 60 * 60);
+      photoUrl = signedPhoto?.signedUrl;
+      documents = documents.map((document) => document.id === photoDocument.id ? { ...document, fileUrl: photoUrl } : document);
+    }
     return {
       id: tenant.id,
       initials: initialsFor(tenant.full_name),
@@ -482,10 +493,11 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       admissionStatus: tenant.status === 'Vacated' ? 'Vacated' : 'Active',
       documentCount: documents.length,
       documents,
+      photoUrl,
       status: normaliseRentStatus(tenant.rent_status),
       tone: tenantTones[index % tenantTones.length],
     };
-  });
+  }));
 
   const expenses: Expense[] = (expensesResult.data ?? []).map((expense: any) => ({
     id: expense.id,
