@@ -62,6 +62,15 @@ The generated website will be in:
 dist
 ```
 
+The build also copies the privacy policy to:
+
+```text
+https://pgcopilot.com/privacy-policy.html
+https://pgcopilot.com/pgcopilot-privacy-policy.html
+```
+
+Use `https://pgcopilot.com/privacy-policy.html` for Apple App Store Connect, Google Play Console, and Expo/EAS metadata.
+
 ## If Hostinger Only Shows Basic Git Deployment
 
 Basic Git deployment may only pull files from GitHub and may not run `npm install` or `npm run build:web`.

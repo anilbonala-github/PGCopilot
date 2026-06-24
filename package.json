@@ -33,7 +33,8 @@
     "ios:simulator": "npx eas-cli build --platform ios --profile ios-simulator",
     "web": "expo start --web",
     "prebuild:web": "node scripts/check-env.js",
-    "build:web": "expo export --platform web --clear --max-workers 1 --output-dir dist"
+    "build:web": "expo export --platform web --clear --max-workers 1 --output-dir dist",
+    "postbuild:web": "node scripts/copy-static.js"
   },
   "private": true
 }

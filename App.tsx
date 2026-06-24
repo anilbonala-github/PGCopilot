@@ -1453,7 +1453,8 @@ function More({ data, onInviteStaff, onLogout }: { data: PgMasterData; onInviteS
       <View style={styles.menuCard}>
         <MenuRow icon="office-building-cog-outline" label="Hostel details" caption="Address, contact, GST and bank details" tone="green" />
         <MenuRow icon="message-text-outline" label="Reminder templates" caption="WhatsApp and SMS rent reminders" tone="blue" />
-        <MenuRow icon="account-group-outline" label="Staff access" caption="Manage wardens and accountants" tone="purple" last />
+        <MenuRow icon="account-group-outline" label="Staff access" caption="Manage wardens and accountants" tone="purple" />
+        <MenuRow icon="shield-lock-outline" label="Privacy Policy" caption="View data usage and deletion policy" tone="ink" onPress={() => Linking.openURL('https://pgcopilot.com/privacy-policy.html')} last />
       </View>
       {data.currentUserRole === 'Owner' && data.hostelId ? (
         <>
