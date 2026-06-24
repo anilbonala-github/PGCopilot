@@ -118,7 +118,8 @@ create table if not exists public.tenants (
   notice_period_days integer not null default 30,
   rent_status text not null default 'Pending' check (rent_status in ('Paid', 'Partial', 'Pending')),
   is_active boolean not null default true,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 alter table public.tenants add column if not exists owner_id uuid references auth.users(id) on delete set null;
@@ -133,6 +134,7 @@ alter table public.tenants add column if not exists vacate_notes text;
 alter table public.tenants add column if not exists food_included boolean not null default true;
 alter table public.tenants add column if not exists rent_due_day integer not null default 5;
 alter table public.tenants add column if not exists status text not null default 'Active';
+alter table public.tenants add column if not exists updated_at timestamptz not null default now();
 
 do $$
 begin
@@ -233,6 +235,20 @@ create table if not exists public.tenant_documents (
 alter table public.tenant_documents add column if not exists owner_id uuid references auth.users(id) on delete set null;
 alter table public.tenant_documents add column if not exists created_by uuid references auth.users(id) on delete set null;
 
+create table if not exists public.tenant_activity (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references auth.users(id) on delete set null,
+  hostel_id uuid not null references public.hostels(id) on delete cascade,
+  created_by uuid references auth.users(id) on delete set null,
+  tenant_id uuid not null references public.tenants(id) on delete cascade,
+  activity_type text not null check (activity_type in ('admission', 'tenant_update', 'vacate', 'document_upload', 'rent_generated', 'payment_received')),
+  description text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.tenant_activity add column if not exists owner_id uuid references auth.users(id) on delete set null;
+alter table public.tenant_activity add column if not exists created_by uuid references auth.users(id) on delete set null;
+
 create index if not exists hostels_owner_id_idx on public.hostels(owner_id);
 create index if not exists hostel_members_user_id_idx on public.hostel_members(user_id);
 create index if not exists hostel_members_hostel_id_idx on public.hostel_members(hostel_id);
@@ -248,6 +264,9 @@ create index if not exists rent_receipts_payment_id_idx on public.rent_receipts(
 create index if not exists rent_receipts_tenant_id_idx on public.rent_receipts(tenant_id);
 create index if not exists tenant_documents_hostel_id_idx on public.tenant_documents(hostel_id);
 create index if not exists tenant_documents_tenant_id_idx on public.tenant_documents(tenant_id);
+create index if not exists tenant_activity_hostel_id_idx on public.tenant_activity(hostel_id);
+create index if not exists tenant_activity_tenant_id_idx on public.tenant_activity(tenant_id);
+create index if not exists tenant_activity_created_at_idx on public.tenant_activity(created_at desc);
 
 create or replace function public.normalized_phone(value text)
 returns text
@@ -493,6 +512,60 @@ create trigger after_tenants_sync_bed_status
 after insert or update of bed_id, status, is_active on public.tenants
 for each row execute function public.sync_bed_status_from_tenant();
 
+create or replace function public.touch_tenant_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists before_tenants_touch_updated_at on public.tenants;
+create trigger before_tenants_touch_updated_at
+before update on public.tenants
+for each row execute function public.touch_tenant_updated_at();
+
+create or replace function public.log_tenant_change_activity()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    insert into public.tenant_activity (owner_id, hostel_id, created_by, tenant_id, activity_type, description)
+    values (new.owner_id, new.hostel_id, coalesce(new.created_by, auth.uid()), new.id, 'admission', new.full_name || ' admitted');
+    return new;
+  end if;
+
+  if tg_op = 'UPDATE' then
+    if old.status is distinct from new.status and new.status = 'Vacated' then
+      insert into public.tenant_activity (owner_id, hostel_id, created_by, tenant_id, activity_type, description)
+      values (new.owner_id, new.hostel_id, auth.uid(), new.id, 'vacate', new.full_name || ' vacated');
+    elsif old.full_name is distinct from new.full_name
+      or old.mobile_number is distinct from new.mobile_number
+      or old.bed_id is distinct from new.bed_id
+      or old.monthly_rent is distinct from new.monthly_rent
+      or old.deposit_amount is distinct from new.deposit_amount
+      or old.rent_due_day is distinct from new.rent_due_day
+      or old.food_included is distinct from new.food_included then
+      insert into public.tenant_activity (owner_id, hostel_id, created_by, tenant_id, activity_type, description)
+      values (new.owner_id, new.hostel_id, auth.uid(), new.id, 'tenant_update', new.full_name || ' profile updated');
+    end if;
+    return new;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists after_tenants_log_activity on public.tenants;
+create trigger after_tenants_log_activity
+after insert or update on public.tenants
+for each row execute function public.log_tenant_change_activity();
+
 create or replace function public.generate_monthly_rent(target_hostel_id uuid, target_month date default date_trunc('month', current_date)::date)
 returns integer
 language plpgsql
@@ -538,6 +611,27 @@ begin
   on conflict (tenant_id, rent_month) do nothing;
 
   get diagnostics generated_count = row_count;
+
+  insert into public.tenant_activity (owner_id, hostel_id, created_by, tenant_id, activity_type, description)
+  select
+    rp.owner_id,
+    rp.hostel_id,
+    auth.uid(),
+    rp.tenant_id,
+    'rent_generated',
+    'Rent bill generated for ' || to_char(rp.rent_month, 'Mon YYYY')
+  from public.rent_payments rp
+  where rp.hostel_id = target_hostel_id
+    and rp.rent_month = date_trunc('month', target_month)::date
+    and rp.created_by = auth.uid()
+    and not exists (
+      select 1
+      from public.tenant_activity ta
+      where ta.tenant_id = rp.tenant_id
+        and ta.activity_type = 'rent_generated'
+        and ta.description = 'Rent bill generated for ' || to_char(rp.rent_month, 'Mon YYYY')
+    );
+
   return generated_count;
 end;
 $$;
@@ -623,6 +717,16 @@ begin
     payment_notes
   )
   returning * into receipt;
+
+  insert into public.tenant_activity (owner_id, hostel_id, created_by, tenant_id, activity_type, description)
+  values (
+    bill.owner_id,
+    bill.hostel_id,
+    auth.uid(),
+    bill.tenant_id,
+    'payment_received',
+    'Payment received: ' || receipt.receipt_number || ' for ' || payment_amount::text
+  );
 
   update public.rent_payments
   set paid_amount = next_paid_amount,
@@ -733,6 +837,36 @@ create trigger before_tenant_documents_insert_audit_fields
 before insert on public.tenant_documents
 for each row execute function public.apply_hostel_audit_fields();
 
+drop trigger if exists before_tenant_activity_insert_audit_fields on public.tenant_activity;
+create trigger before_tenant_activity_insert_audit_fields
+before insert on public.tenant_activity
+for each row execute function public.apply_hostel_audit_fields();
+
+create or replace function public.log_tenant_document_activity()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.tenant_activity (owner_id, hostel_id, created_by, tenant_id, activity_type, description)
+  values (
+    new.owner_id,
+    new.hostel_id,
+    coalesce(new.created_by, auth.uid()),
+    new.tenant_id,
+    'document_upload',
+    coalesce(new.document_type, 'Document') || ' uploaded'
+  );
+  return new;
+end;
+$$;
+
+drop trigger if exists after_tenant_documents_log_activity on public.tenant_documents;
+create trigger after_tenant_documents_log_activity
+after insert on public.tenant_documents
+for each row execute function public.log_tenant_document_activity();
+
 update public.hostels
 set owner_id = coalesce(owner_id, created_by),
     created_by = coalesce(created_by, owner_id)
@@ -800,6 +934,13 @@ set owner_id = coalesce(td.owner_id, h.owner_id),
 from public.hostels h
 where td.hostel_id = h.id
   and (td.owner_id is null or td.created_by is null);
+
+update public.tenant_activity ta
+set owner_id = coalesce(ta.owner_id, h.owner_id),
+    created_by = coalesce(ta.created_by, h.owner_id)
+from public.hostels h
+where ta.hostel_id = h.id
+  and (ta.owner_id is null or ta.created_by is null);
 
 create or replace function public.sync_new_auth_user()
 returns trigger
@@ -911,6 +1052,7 @@ alter table public.expenses enable row level security;
 alter table public.rent_payments enable row level security;
 alter table public.rent_receipts enable row level security;
 alter table public.tenant_documents enable row level security;
+alter table public.tenant_activity enable row level security;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -941,6 +1083,8 @@ drop policy if exists "MVP read rent receipts" on public.rent_receipts;
 drop policy if exists "MVP write rent receipts" on public.rent_receipts;
 drop policy if exists "MVP read tenant documents" on public.tenant_documents;
 drop policy if exists "MVP write tenant documents" on public.tenant_documents;
+drop policy if exists "MVP read tenant activity" on public.tenant_activity;
+drop policy if exists "MVP write tenant activity" on public.tenant_activity;
 
 drop policy if exists "Profiles are visible to owner" on public.profiles;
 drop policy if exists "Users update own profile" on public.profiles;
@@ -1064,6 +1208,36 @@ create policy "Owner staff update tenant documents" on public.tenant_documents
     )
   );
 create policy "Owners delete tenant documents" on public.tenant_documents
+  for delete using (public.is_hostel_owner(hostel_id));
+
+drop policy if exists "Members read tenant activity" on public.tenant_activity;
+drop policy if exists "Owner staff write tenant activity" on public.tenant_activity;
+drop policy if exists "Owner staff update tenant activity" on public.tenant_activity;
+drop policy if exists "Owners delete tenant activity" on public.tenant_activity;
+create policy "Members read tenant activity" on public.tenant_activity
+  for select using (public.is_hostel_member(hostel_id));
+create policy "Owner staff write tenant activity" on public.tenant_activity
+  for insert with check (
+    public.can_write_hostel_data(hostel_id)
+    and exists (
+      select 1
+      from public.tenants t
+      where t.id = tenant_id
+        and t.hostel_id = tenant_activity.hostel_id
+    )
+  );
+create policy "Owner staff update tenant activity" on public.tenant_activity
+  for update using (public.can_write_hostel_data(hostel_id))
+  with check (
+    public.can_write_hostel_data(hostel_id)
+    and exists (
+      select 1
+      from public.tenants t
+      where t.id = tenant_id
+        and t.hostel_id = tenant_activity.hostel_id
+    )
+  );
+create policy "Owners delete tenant activity" on public.tenant_activity
   for delete using (public.is_hostel_owner(hostel_id));
 
 drop policy if exists "Members read tenant document files" on storage.objects;

@@ -83,6 +83,14 @@ export type RentBill = {
   receipts: RentReceipt[];
 };
 
+export type TenantActivity = {
+  id: string;
+  tenantId: string;
+  activityType: 'admission' | 'tenant_update' | 'vacate' | 'document_upload' | 'rent_generated' | 'payment_received';
+  description: string;
+  createdAt: string;
+};
+
 export type PgMasterData = {
   hostelId?: string;
   selectedHostelId?: string;
@@ -96,6 +104,7 @@ export type PgMasterData = {
   expenses: Expense[];
   assignableBeds?: string[];
   rentBills?: RentBill[];
+  tenantActivities?: TenantActivity[];
 };
 
 export type LoadPgMasterResult = {
@@ -207,6 +216,7 @@ export const fallbackData: PgMasterData = {
     { label: 'Internet & utilities', amount: 24500, icon: 'wifi', tone: 'green' },
   ],
   rentBills: [],
+  tenantActivities: [],
 };
 
 const emptyHostelData: PgMasterData = {
@@ -219,6 +229,7 @@ const emptyHostelData: PgMasterData = {
   expenses: [],
   assignableBeds: [],
   rentBills: [],
+  tenantActivities: [],
 };
 
 export function buildSummary(data: PgMasterData) {
@@ -411,7 +422,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
   const role = currentHostel?.role ?? 'Owner';
   await supabase.rpc('expire_reserved_beds', { target_hostel_id: hostel.id });
 
-  const [roomsResult, tenantsResult, expensesResult, rentPaymentsResult] = await Promise.all([
+  const [roomsResult, tenantsResult, expensesResult, rentPaymentsResult, tenantActivityResult] = await Promise.all([
     supabase
       .from('rooms')
       .select('id,room_number,floor,room_type,beds(id,bed_number,status)')
@@ -432,13 +443,19 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       .select('id,tenant_id,rent_month,amount,paid_amount,due_date,status,payment_mode,rent_receipts(id,receipt_number,payment_date,amount,payment_mode,notes),tenants(full_name,beds(bed_number))')
       .eq('hostel_id', hostel.id)
       .order('due_date', { ascending: false }),
+    supabase
+      .from('tenant_activity')
+      .select('id,tenant_id,activity_type,description,created_at')
+      .eq('hostel_id', hostel.id)
+      .order('created_at', { ascending: false })
+      .limit(100),
   ]);
 
-  if (roomsResult.error || tenantsResult.error || expensesResult.error || rentPaymentsResult.error) {
+  if (roomsResult.error || tenantsResult.error || expensesResult.error || rentPaymentsResult.error || tenantActivityResult.error) {
     return {
       data: fallbackData,
       source: 'demo',
-      error: roomsResult.error?.message || tenantsResult.error?.message || expensesResult.error?.message || rentPaymentsResult.error?.message,
+      error: roomsResult.error?.message || tenantsResult.error?.message || expensesResult.error?.message || rentPaymentsResult.error?.message || tenantActivityResult.error?.message,
     };
   }
 
@@ -543,6 +560,14 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
     };
   });
 
+  const tenantActivities: TenantActivity[] = (tenantActivityResult.data ?? []).map((activity: any) => ({
+    id: activity.id,
+    tenantId: activity.tenant_id,
+    activityType: activity.activity_type,
+    description: activity.description,
+    createdAt: activity.created_at,
+  }));
+
   return {
     data: {
       hostelId: hostel.id,
@@ -557,6 +582,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       expenses,
       assignableBeds,
       rentBills,
+      tenantActivities,
     },
     source: 'supabase',
   };

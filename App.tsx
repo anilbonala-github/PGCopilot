@@ -44,6 +44,7 @@ import {
   type RentReceipt,
   type PgMasterData,
   type Tenant,
+  type TenantActivity,
   type TenantDocument,
   type TenantDocumentInput,
   type TenantDocumentType,
@@ -225,6 +226,7 @@ function Dashboard({
     { label: 'Vacant', value: String(summary.vacantBeds), icon: 'bed-empty' as IconName, tone: 'orange' as Tone },
     { label: 'Occupancy', value: `${summary.occupancyRate}%`, icon: 'chart-donut' as IconName, tone: 'purple' as Tone },
   ];
+  const recentActivities = (data.tenantActivities ?? []).slice(0, 3);
   return (
     <>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
@@ -323,9 +325,22 @@ function Dashboard({
 
       <SectionTitle title="Recent activity" action="View all" />
       <View style={styles.listCard}>
-        <Activity icon="cash-check" tone="green" title={`Rent collected from ${data.tenants.find((tenant) => tenant.status === 'Paid')?.name ?? 'tenant'}`} caption="UPI payment · synced record" value={`+ ${money(data.tenants.find((tenant) => tenant.status === 'Paid')?.rent ?? 0)}`} />
-        <Activity icon="account-plus-outline" tone="blue" title={`${summary.newAdmissions} active admissions`} caption={`${data.tenants.length} tenants available`} />
-        <Activity icon="file-document-outline" tone="orange" title={`${data.expenses[0]?.label ?? 'Expense'} added`} caption="Current month" value={`- ${money(data.expenses[0]?.amount ?? 0)}`} last />
+        {recentActivities.length ? recentActivities.map((activity, index, all) => (
+          <Activity
+            key={activity.id}
+            icon={activityIcon(activity.activityType)}
+            tone={activityTone(activity.activityType)}
+            title={activity.description}
+            caption={activityCaption(activity.createdAt)}
+            last={index === all.length - 1}
+          />
+        )) : (
+          <>
+            <Activity icon="cash-check" tone="green" title={`Rent collected from ${data.tenants.find((tenant) => tenant.status === 'Paid')?.name ?? 'tenant'}`} caption="UPI payment - synced record" value={`+ ${money(data.tenants.find((tenant) => tenant.status === 'Paid')?.rent ?? 0)}`} />
+            <Activity icon="account-plus-outline" tone="blue" title={`${summary.newAdmissions} active admissions`} caption={`${data.tenants.length} tenants available`} />
+            <Activity icon="file-document-outline" tone="orange" title={`${data.expenses[0]?.label ?? 'Expense'} added`} caption="Current month" value={`- ${money(data.expenses[0]?.amount ?? 0)}`} last />
+          </>
+        )}
       </View>
       </ScrollView>
       <HostelSwitcherModal
@@ -1049,6 +1064,29 @@ function EditTenantModal({
   );
 }
 
+function activityIcon(type: TenantActivity['activityType']): IconName {
+  if (type === 'payment_received') return 'cash-check';
+  if (type === 'rent_generated') return 'script-text-outline';
+  if (type === 'document_upload') return 'file-upload-outline';
+  if (type === 'vacate') return 'logout-variant';
+  if (type === 'tenant_update') return 'account-edit-outline';
+  return 'account-plus-outline';
+}
+
+function activityTone(type: TenantActivity['activityType']): Tone {
+  if (type === 'payment_received') return 'blue';
+  if (type === 'rent_generated') return 'orange';
+  if (type === 'document_upload') return 'purple';
+  if (type === 'vacate') return 'red';
+  if (type === 'tenant_update') return 'ink';
+  return 'green';
+}
+
+function activityCaption(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('en-IN');
+}
+
 function VacateTenantModal({ tenant, visible, onClose, onSubmit, pendingRent }: { tenant?: Tenant; visible: boolean; onClose: () => void; onSubmit: (input: VacateTenantInput) => Promise<void>; pendingRent: number }) {
   const [vacateDate, setVacateDate] = useState(new Date().toISOString().slice(0, 10));
   const [damageCharges, setDamageCharges] = useState('0');
@@ -1146,6 +1184,7 @@ function TenantDetail({
   const tenantBills = (data.rentBills ?? []).filter((bill) => bill.tenantId === tenant.id);
   const currentBill = tenantBills[0];
   const pendingRent = currentBill?.pendingAmount ?? (tenant.status === 'Paid' ? 0 : tenant.rent);
+  const tenantActivities = (data.tenantActivities ?? []).filter((activity) => activity.tenantId === tenant.id);
 
   const openWhatsApp = (template: 'rent' | 'pending' | 'paid') => {
     const amount = template === 'paid' ? (currentBill?.paidAmount ?? tenant.rent) : pendingRent;
@@ -1248,9 +1287,22 @@ function TenantDetail({
 
         <SectionTitle title="Activity timeline" />
         <View style={styles.listCard}>
-          <Activity icon="account-plus-outline" tone="green" title="Tenant admitted" caption={tenant.joiningDate || 'Admission date not added'} />
-          {currentBill?.receipts[0] ? <Activity icon="cash-check" tone="blue" title="Rent paid" caption={`${money(currentBill.receipts[0].amount)} - ${currentBill.receipts[0].receiptNumber}`} /> : null}
-          {tenant.vacateDate ? <Activity icon="logout-variant" tone="red" title="Tenant vacated" caption={tenant.vacateDate} last /> : null}
+          {tenantActivities.length ? tenantActivities.slice(0, 8).map((activity, index, all) => (
+            <Activity
+              key={activity.id}
+              icon={activityIcon(activity.activityType)}
+              tone={activityTone(activity.activityType)}
+              title={activity.description}
+              caption={activityCaption(activity.createdAt)}
+              last={index === all.length - 1}
+            />
+          )) : (
+            <>
+              <Activity icon="account-plus-outline" tone="green" title="Tenant admitted" caption={tenant.joiningDate || 'Admission date not added'} />
+              {currentBill?.receipts[0] ? <Activity icon="cash-check" tone="blue" title="Rent paid" caption={`${money(currentBill.receipts[0].amount)} - ${currentBill.receipts[0].receiptNumber}`} /> : null}
+              {tenant.vacateDate ? <Activity icon="logout-variant" tone="red" title="Tenant vacated" caption={tenant.vacateDate} last /> : null}
+            </>
+          )}
         </View>
       </ScrollView>
       <EditTenantModal tenant={tenant} visible={editOpen} onClose={() => setEditOpen(false)} onSubmit={onUpdateTenant} availableBeds={data.assignableBeds ?? []} />
