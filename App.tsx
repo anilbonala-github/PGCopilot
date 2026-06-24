@@ -1589,60 +1589,72 @@ function Login({
     await onVerifyOtp(formattedPhone, otp.trim());
   };
 
-  return (
-    <SafeAreaView style={styles.loginScreen}>
-      <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.loginKeyboardContent}>
-          <View style={styles.loginTop}>
-            <Image source={pgcopilotLogo} style={styles.logoImage} resizeMode="contain" />
-            <Text style={styles.logoText}>
-              <Text style={styles.logoTextBlue}>PG</Text>
-              <Text style={styles.logoTextGreen}>Copilot</Text>
-            </Text>
-            <Text style={styles.loginTagline}>Where Tenants Find and Owners Thrive</Text>
-          </View>
-          <View style={styles.loginCard}>
-            <Text style={styles.loginTitle}>Welcome back</Text>
-            <Text style={styles.loginCaption}>{authEnabled ? 'Sign in with mobile OTP' : 'Demo mode because Supabase keys are missing'}</Text>
-            <Text style={styles.loginFieldLabel}>MOBILE NUMBER</Text>
+  const loginContent = (
+    <>
+      <View style={styles.loginTop}>
+        <Image source={pgcopilotLogo} style={styles.logoImage} resizeMode="contain" />
+        <Text style={styles.logoText}>
+          <Text style={styles.logoTextBlue}>PG</Text>
+          <Text style={styles.logoTextGreen}>Copilot</Text>
+        </Text>
+        <Text style={styles.loginTagline}>Where Tenants Find and Owners Thrive</Text>
+      </View>
+      <View style={styles.loginCard}>
+        <Text style={styles.loginTitle}>Welcome back</Text>
+        <Text style={styles.loginCaption}>{authEnabled ? 'Sign in with mobile OTP' : 'Demo mode because Supabase keys are missing'}</Text>
+        <Text style={styles.loginFieldLabel}>MOBILE NUMBER</Text>
+        <View style={styles.loginInput}>
+          <Text style={styles.prefix}>+91</Text>
+          <TextInput
+            style={styles.flex}
+            placeholder="Enter mobile number"
+            keyboardType="phone-pad"
+            value={phone}
+            onChangeText={setPhone}
+            inputAccessoryViewID={Platform.OS === 'ios' ? loginKeyboardAccessoryId : undefined}
+            onSubmitEditing={Keyboard.dismiss}
+            returnKeyType="done"
+          />
+        </View>
+        {otpSent ? (
+          <>
+            <Text style={[styles.loginFieldLabel, styles.otpLabel]}>OTP CODE</Text>
             <View style={styles.loginInput}>
-              <Text style={styles.prefix}>+91</Text>
               <TextInput
                 style={styles.flex}
-                placeholder="Enter mobile number"
-                keyboardType="phone-pad"
-                value={phone}
-                onChangeText={setPhone}
+                placeholder="Enter OTP"
+                keyboardType="number-pad"
+                value={otp}
+                onChangeText={setOtp}
                 inputAccessoryViewID={Platform.OS === 'ios' ? loginKeyboardAccessoryId : undefined}
                 onSubmitEditing={Keyboard.dismiss}
                 returnKeyType="done"
               />
             </View>
-            {otpSent ? (
-              <>
-                <Text style={[styles.loginFieldLabel, styles.otpLabel]}>OTP CODE</Text>
-                <View style={styles.loginInput}>
-                  <TextInput
-                    style={styles.flex}
-                    placeholder="Enter OTP"
-                    keyboardType="number-pad"
-                    value={otp}
-                    onChangeText={setOtp}
-                    inputAccessoryViewID={Platform.OS === 'ios' ? loginKeyboardAccessoryId : undefined}
-                    onSubmitEditing={Keyboard.dismiss}
-                    returnKeyType="done"
-                  />
-                </View>
-              </>
-            ) : null}
-            {error ? <Text style={styles.authError}>{error}</Text> : null}
-            <TouchableOpacity style={styles.primaryButton} onPress={handleAuthPress} disabled={loading}>
-              <Text style={styles.primaryButtonText}>{loading ? 'Please wait...' : authEnabled ? otpSent ? 'Verify OTP' : 'Send OTP' : 'Continue demo'}</Text>
-            </TouchableOpacity>
-            <Text style={styles.loginSecurityHint}>{authEnabled ? 'Secure access for PG owners and staff' : 'Connect Supabase to enable production login'}</Text>
-          </View>
-        </KeyboardAvoidingView>
-      </TouchableWithoutFeedback>
+          </>
+        ) : null}
+        {error ? <Text style={styles.authError}>{error}</Text> : null}
+        <TouchableOpacity style={styles.primaryButton} onPress={handleAuthPress} disabled={loading}>
+          <Text style={styles.primaryButtonText}>{loading ? 'Please wait...' : authEnabled ? otpSent ? 'Verify OTP' : 'Send OTP' : 'Continue demo'}</Text>
+        </TouchableOpacity>
+        <Text style={styles.loginSecurityHint}>{authEnabled ? 'Secure access for PG owners and staff' : 'Connect Supabase to enable production login'}</Text>
+      </View>
+    </>
+  );
+
+  const wrappedLoginContent = Platform.OS === 'web' ? (
+    <View style={styles.loginKeyboardContent}>{loginContent}</View>
+  ) : (
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.loginKeyboardContent}>
+        {loginContent}
+      </KeyboardAvoidingView>
+    </TouchableWithoutFeedback>
+  );
+
+  return (
+    <SafeAreaView style={styles.loginScreen}>
+      {wrappedLoginContent}
       {Platform.OS === 'ios' ? (
         <InputAccessoryView nativeID={loginKeyboardAccessoryId}>
           <View style={styles.keyboardAccessory}>
