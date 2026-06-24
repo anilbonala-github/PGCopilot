@@ -14,14 +14,14 @@
     "backgroundColor": "#F7F7F2",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anilbonala.pgcopilot",
+      "bundleIdentifier": "com.pgcopilot.app",
       "buildNumber": "1",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.anilbonala.pgcopilot",
+      "package": "com.pgcopilot.app",
       "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -45,6 +45,12 @@
           }
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f7e45555-a949-4045-ba00-31e99b032596"
+      }
+    },
+    "owner": "pgcopilot"
   }
 }
