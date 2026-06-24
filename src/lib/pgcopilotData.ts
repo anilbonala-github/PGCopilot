@@ -5,6 +5,7 @@ export type RentStatus = 'Paid' | 'Partial' | 'Pending';
 export type PaymentMode = 'Cash' | 'UPI' | 'Bank Transfer';
 export type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
 export type UserRole = 'Owner' | 'Staff';
+export type ExpenseCategory = 'Food' | 'Electricity' | 'Water' | 'Internet' | 'Cook Salary' | 'Cleaning' | 'Maintenance' | 'Other';
 
 export type HostelSummary = {
   id: string;
@@ -54,7 +55,15 @@ export type Tenant = {
 export type Expense = {
   id?: string;
   label: string;
+  category?: ExpenseCategory;
   amount: number;
+  date?: string;
+  vendor?: string;
+  notes?: string;
+  billFileName?: string;
+  billStoragePath?: string;
+  billMimeType?: string;
+  billUrl?: string;
   icon: string;
   tone: Tone;
 };
@@ -182,6 +191,21 @@ export type HostelSetupInput = {
   contactNumber?: string;
 };
 
+export type ExpenseBillInput = {
+  uri: string;
+  name: string;
+  mimeType?: string;
+};
+
+export type NewExpenseInput = {
+  amount: number;
+  date: string;
+  category: ExpenseCategory;
+  vendor: string;
+  notes: string;
+  bill?: ExpenseBillInput;
+};
+
 const tenantTones = ['#DDEFE7', '#E4EEFA', '#FCE9DF', '#F7EED5', '#EAE4F8', '#E0F3F0'];
 
 export const fallbackData: PgMasterData = {
@@ -255,7 +279,7 @@ export function buildSummary(data: PgMasterData) {
   const unpaidRent = data.rentBills?.reduce((sum, bill) => sum + bill.pendingAmount, 0) ?? pendingRent;
   const expensesTotal = data.expenses.reduce((sum, expense) => sum + expense.amount, 0);
   const foodExpense = data.expenses
-    .filter((expense) => expense.label.toLowerCase().includes('food'))
+    .filter((expense) => expense.category === 'Food' || expense.label.toLowerCase().includes('food'))
     .reduce((sum, expense) => sum + expense.amount, 0);
 
   return {
@@ -316,6 +340,16 @@ function slugFileName(name: string) {
     .replace(/[^a-zA-Z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     || `document-${Date.now()}`;
+}
+
+function expenseVisual(category: string | null | undefined): { icon: string; tone: Tone } {
+  if (category === 'Food') return { icon: 'silverware-fork-knife', tone: 'orange' };
+  if (category === 'Cook Salary' || category === 'Cleaning') return { icon: 'account-group-outline', tone: 'purple' };
+  if (category === 'Electricity') return { icon: 'lightning-bolt-outline', tone: 'blue' };
+  if (category === 'Water') return { icon: 'water-outline', tone: 'blue' };
+  if (category === 'Internet') return { icon: 'wifi', tone: 'green' };
+  if (category === 'Maintenance') return { icon: 'hammer-wrench', tone: 'red' };
+  return { icon: 'file-document-outline', tone: 'green' };
 }
 
 async function uploadTenantDocuments(input: Pick<NewTenantInput, 'documents'>, tenantId: string, currentData: PgMasterData, userId?: string) {
@@ -440,7 +474,7 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       .order('created_at', { ascending: false }),
     supabase
       .from('expenses')
-      .select('id,label,category,amount')
+      .select('id,label,category,amount,expense_date,vendor,notes,bill_storage_path,bill_file_name,bill_mime_type')
       .eq('hostel_id', hostel.id)
       .order('created_at', { ascending: false }),
     supabase
@@ -528,12 +562,30 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
     };
   }));
 
-  const expenses: Expense[] = (expensesResult.data ?? []).map((expense: any) => ({
-    id: expense.id,
-    label: expense.label,
-    amount: Number(expense.amount ?? 0),
-    icon: expense.category === 'Food' ? 'silverware-fork-knife' : expense.category === 'Salary' ? 'account-group-outline' : expense.category === 'Utilities' ? 'lightning-bolt-outline' : 'file-document-outline',
-    tone: expense.category === 'Food' ? 'orange' : expense.category === 'Salary' ? 'purple' : expense.category === 'Utilities' ? 'blue' : 'green',
+  const expenses: Expense[] = await Promise.all((expensesResult.data ?? []).map(async (expense: any) => {
+    const visual = expenseVisual(expense.category);
+    let billUrl: string | undefined;
+    if (expense.bill_storage_path) {
+      const { data: signedBill } = await supabase!.storage
+        .from('expense-bills')
+        .createSignedUrl(expense.bill_storage_path, 60 * 60);
+      billUrl = signedBill?.signedUrl;
+    }
+    return {
+      id: expense.id,
+      label: expense.label,
+      category: expense.category,
+      amount: Number(expense.amount ?? 0),
+      date: expense.expense_date,
+      vendor: expense.vendor ?? '',
+      notes: expense.notes ?? '',
+      billFileName: expense.bill_file_name ?? undefined,
+      billStoragePath: expense.bill_storage_path ?? undefined,
+      billMimeType: expense.bill_mime_type ?? undefined,
+      billUrl,
+      icon: visual.icon,
+      tone: visual.tone,
+    };
   }));
 
   const rentBills: RentBill[] = (rentPaymentsResult.data ?? []).map((bill: any) => {
@@ -891,4 +943,65 @@ export async function recordRentPayment(input: RecordRentPaymentInput, currentDa
   if (error) throw new Error(error.message);
   const refreshed = await loadPgMasterData(currentData.hostelId);
   return { data: refreshed.data, receipt: receipt as any };
+}
+
+export async function createExpense(input: NewExpenseInput, currentData: PgMasterData) {
+  if (!isSupabaseConfigured || !supabase || !currentData.hostelId) {
+    const visual = expenseVisual(input.category);
+    return {
+      ...currentData,
+      expenses: [
+        {
+          label: `${input.category}${input.vendor ? ` - ${input.vendor}` : ''}`,
+          category: input.category,
+          amount: input.amount,
+          date: input.date,
+          vendor: input.vendor,
+          notes: input.notes,
+          billFileName: input.bill?.name,
+          icon: visual.icon,
+          tone: visual.tone,
+        },
+        ...currentData.expenses,
+      ],
+    };
+  }
+
+  const userId = await currentUserId();
+  let billStoragePath: string | undefined;
+  if (input.bill) {
+    const fileName = `${Date.now()}-${slugFileName(input.bill.name)}`;
+    billStoragePath = `${currentData.hostelId}/expenses/${fileName}`;
+    const response = await fetch(input.bill.uri);
+    const blob = await response.blob();
+    const uploadResult = await supabase.storage
+      .from('expense-bills')
+      .upload(billStoragePath, blob, {
+        contentType: input.bill.mimeType || 'application/octet-stream',
+        upsert: true,
+      });
+    if (uploadResult.error) throw new Error(uploadResult.error.message);
+  }
+
+  const label = `${input.category}${input.vendor ? ` - ${input.vendor}` : ''}`;
+  const { error } = await supabase.from('expenses').insert({
+    hostel_id: currentData.hostelId,
+    owner_id: currentData.ownerId,
+    created_by: userId,
+    label,
+    category: input.category,
+    amount: input.amount,
+    expense_date: input.date,
+    expense_month: `${input.date.slice(0, 7)}-01`,
+    vendor: input.vendor || null,
+    notes: input.notes || null,
+    bill_bucket_id: input.bill ? 'expense-bills' : null,
+    bill_storage_path: billStoragePath ?? null,
+    bill_file_name: input.bill?.name ?? null,
+    bill_mime_type: input.bill?.mimeType ?? null,
+  });
+
+  if (error) throw new Error(error.message);
+  const refreshed = await loadPgMasterData(currentData.hostelId);
+  return refreshed.data;
 }

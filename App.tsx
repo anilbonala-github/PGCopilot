@@ -28,6 +28,7 @@ import {
   acceptStaffInvites,
   buildSummary,
   createOwnerHostel,
+  createExpense as saveExpense,
   createTenant as saveTenant,
   fallbackData,
   generateMonthlyRent as generateRentBills,
@@ -37,7 +38,9 @@ import {
   updateTenant as saveTenantUpdate,
   vacateTenant as saveTenantVacate,
   type HostelSetupInput,
+  type ExpenseCategory,
   type NewTenantInput,
+  type NewExpenseInput,
   type PaymentMode,
   type RecordRentPaymentInput,
   type RentBill,
@@ -1556,14 +1559,24 @@ function Rent({ data, onGenerateRent, onRecordPayment }: { data: PgMasterData; o
   );
 }
 
-function More({ data, onInviteStaff, onLogout }: { data: PgMasterData; onInviteStaff: (phone: string) => Promise<void>; onLogout: () => Promise<void> }) {
+function More({
+  data,
+  onInviteStaff,
+  onAddExpense,
+  onLogout,
+}: {
+  data: PgMasterData;
+  onInviteStaff: (phone: string) => Promise<void>;
+  onAddExpense: (input: NewExpenseInput) => Promise<void>;
+  onLogout: () => Promise<void>;
+}) {
   const [view, setView] = useState<'menu' | 'expenses' | 'reports'>('menu');
   const [staffPhone, setStaffPhone] = useState('');
   const [inviteMessage, setInviteMessage] = useState<string | undefined>();
   const [inviting, setInviting] = useState(false);
   const summary = buildSummary(data);
-  if (view === 'expenses') return <Expenses data={data} onBack={() => setView('menu')} />;
-  if (view === 'reports') return <Reports data={data} onBack={() => setView('menu')} />;
+  if (view === 'expenses') return <Phase2Expenses data={data} onBack={() => setView('menu')} onAddExpense={onAddExpense} />;
+  if (view === 'reports') return <Phase2Reports data={data} onBack={() => setView('menu')} />;
 
   const handleInvite = async () => {
     if (!staffPhone.trim()) return;
@@ -1685,6 +1698,396 @@ function Reports({ data, onBack }: { data: PgMasterData; onBack: () => void }) {
       </View>
     </ScrollView>
   );
+}
+
+const expenseCategoryOptions: ExpenseCategory[] = ['Food', 'Electricity', 'Water', 'Internet', 'Cook Salary', 'Cleaning', 'Maintenance', 'Other'];
+
+function toneBackground(tone: Tone) {
+  const palette: Record<Tone, string> = {
+    green: colors.paleGreen,
+    orange: colors.paleOrange,
+    red: colors.paleRed,
+    blue: colors.paleBlue,
+    purple: colors.palePurple,
+    ink: '#EDF0EE',
+  };
+  return palette[tone];
+}
+
+function Phase2Expenses({ data, onBack, onAddExpense }: { data: PgMasterData; onBack: () => void; onAddExpense: (input: NewExpenseInput) => Promise<void> }) {
+  const [addOpen, setAddOpen] = useState(false);
+  const summary = buildSummary(data);
+  const monthlyLabel = new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  const categoryTotals = expenseCategoryOptions
+    .map((category) => ({
+      category,
+      amount: data.expenses.filter((expense) => expense.category === category || (!expense.category && expense.label.toLowerCase().includes(category.toLowerCase()))).reduce((sum, expense) => sum + expense.amount, 0),
+    }))
+    .filter((item) => item.amount > 0);
+
+  return (
+    <>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <BackHeader title="Expenses" onBack={onBack} />
+        <View style={styles.expenseHero}><Text style={styles.cardEyebrow}>TOTAL EXPENSES</Text><Text style={styles.expenseHeroValue}>{money(summary.expensesTotal)}</Text><Text style={styles.expenseHeroCaption}>{monthlyLabel} expense control</Text></View>
+        <View style={styles.sectionHeading}>
+          <Text style={styles.sectionTitle}>Expense breakdown</Text>
+          <TouchableOpacity style={styles.sectionButton} onPress={() => setAddOpen(true)}><Text style={styles.sectionButtonText}>+ Add expense</Text></TouchableOpacity>
+        </View>
+        <View style={styles.listCard}>
+          {data.expenses.length ? data.expenses.map((item, index) => (
+            <View key={item.id ?? item.label} style={[styles.expenseRow, index !== data.expenses.length - 1 && styles.divider]}>
+              <View style={[styles.activityIcon, { backgroundColor: toneBackground(item.tone) }]}>
+                <AppIcon name={item.icon as IconName} size={18} color={colors[item.tone]} />
+              </View>
+              <View style={styles.flex}>
+                <Text style={styles.activityTitle}>{item.label}</Text>
+                <Text style={styles.activityCaption}>{item.date ?? monthlyLabel}{item.vendor ? ` - ${item.vendor}` : ''}</Text>
+                {item.notes ? <Text style={styles.expenseNotes}>{item.notes}</Text> : null}
+                {item.billUrl ? (
+                  <TouchableOpacity style={styles.inlineLink} onPress={() => Linking.openURL(item.billUrl!)}>
+                    <AppIcon name="paperclip" size={13} color={colors.green} />
+                    <Text style={styles.inlineLinkText}>{item.billFileName ?? 'View bill'}</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+              <Text style={[styles.activityValue, { color: colors.red }]}>- {money(item.amount)}</Text>
+            </View>
+          )) : <Text style={styles.emptyState}>No expenses added yet.</Text>}
+        </View>
+        <SectionTitle title="Category-wise expenses" />
+        <View style={styles.listCard}>
+          {categoryTotals.length ? categoryTotals.map((item, index) => (
+            <View key={item.category} style={[styles.categoryRow, index !== categoryTotals.length - 1 && styles.divider]}>
+              <Text style={styles.tenantName}>{item.category}</Text>
+              <Text style={styles.pendingValue}>{money(item.amount)}</Text>
+            </View>
+          )) : <Text style={styles.emptyState}>Category report will appear after adding expenses.</Text>}
+        </View>
+        <SectionTitle title="Food cost overview" />
+        <View style={styles.foodCard}>
+          <View><Text style={styles.smallMuted}>Food expense</Text><Text style={styles.foodValue}>{money(summary.foodExpense)}</Text></View>
+          <View style={styles.foodDivider} />
+          <View><Text style={styles.smallMuted}>Residents</Text><Text style={styles.foodValue}>{summary.foodResidents}</Text></View>
+          <View style={styles.foodDivider} />
+          <View><Text style={styles.smallMuted}>Per person</Text><Text style={styles.foodValue}>{money(summary.foodResidents ? Math.round(summary.foodExpense / summary.foodResidents) : 0)}</Text></View>
+        </View>
+      </ScrollView>
+      <AddExpenseModal visible={addOpen} onClose={() => setAddOpen(false)} onSubmit={onAddExpense} />
+    </>
+  );
+}
+
+function Phase2Reports({ data, onBack }: { data: PgMasterData; onBack: () => void }) {
+  const summary = buildSummary(data);
+  const pendingBills = (data.rentBills ?? []).filter((bill) => bill.status !== 'Paid');
+  const expenseTotals = expenseCategoryOptions.map((category) => ({
+    category,
+    amount: data.expenses.filter((expense) => expense.category === category || (!expense.category && expense.label.toLowerCase().includes(category.toLowerCase()))).reduce((sum, expense) => sum + expense.amount, 0),
+  })).filter((item) => item.amount > 0);
+  const reportPayload = buildReportPayload(data, summary, pendingBills, expenseTotals);
+
+  return (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <BackHeader title="Reports" onBack={onBack} />
+      <View style={styles.reportHero}>
+        <View><Text style={styles.cardEyebrow}>NET PROFIT</Text><Text style={styles.reportHeroValue}>{money(summary.profit)}</Text><Text style={styles.expenseHeroCaption}>Income minus expenses</Text></View>
+        <AppIcon name="chart-line" size={40} color={colors.green} />
+      </View>
+      <View style={styles.pnlRow}>
+        <View style={styles.pnlCard}><Text style={styles.smallMuted}>Income</Text><Text style={[styles.pnlValue, { color: colors.green }]}>{money(summary.income)}</Text></View>
+        <View style={styles.pnlCard}><Text style={styles.smallMuted}>Expenses</Text><Text style={[styles.pnlValue, { color: colors.red }]}>{money(summary.expensesTotal)}</Text></View>
+      </View>
+      <SectionTitle title="Occupancy" />
+      <View style={styles.occupancyCard}>
+        <View style={styles.occupancyRing}><Text style={styles.occupancyValue}>{summary.occupancyRate}%</Text></View>
+        <View style={styles.flex}>
+          <View style={styles.occupancyLegend}><View style={[styles.legendDot, { backgroundColor: colors.green }]} /><Text style={styles.legendText}>Total beds</Text><Text style={styles.legendValue}>{summary.totalBeds}</Text></View>
+          <View style={styles.occupancyLegend}><View style={[styles.legendDot, { backgroundColor: colors.green }]} /><Text style={styles.legendText}>Occupied beds</Text><Text style={styles.legendValue}>{summary.occupiedBeds}</Text></View>
+          <View style={styles.occupancyLegend}><View style={[styles.legendDot, { backgroundColor: colors.orange }]} /><Text style={styles.legendText}>Vacant beds</Text><Text style={styles.legendValue}>{summary.vacantBeds}</Text></View>
+        </View>
+      </View>
+      <SectionTitle title="Rent collection" />
+      <View style={styles.reportMetricGrid}>
+        <View style={styles.reportMetric}><Text style={styles.smallMuted}>Expected</Text><Text style={styles.pnlValue}>{money(summary.expectedRent)}</Text></View>
+        <View style={styles.reportMetric}><Text style={styles.smallMuted}>Collected</Text><Text style={[styles.pnlValue, { color: colors.green }]}>{money(summary.collectedRent)}</Text></View>
+        <View style={styles.reportMetric}><Text style={styles.smallMuted}>Pending</Text><Text style={[styles.pnlValue, { color: colors.orange }]}>{money(summary.pendingRent)}</Text></View>
+      </View>
+      <SectionTitle title="Expense report" />
+      <View style={styles.listCard}>
+        {expenseTotals.length ? expenseTotals.map((item, index) => (
+          <View key={item.category} style={[styles.categoryRow, index !== expenseTotals.length - 1 && styles.divider]}>
+            <Text style={styles.tenantName}>{item.category}</Text>
+            <Text style={styles.pendingValue}>{money(item.amount)}</Text>
+          </View>
+        )) : <Text style={styles.emptyState}>No expenses yet.</Text>}
+      </View>
+      <SectionTitle title="Pending rent report" />
+      <View style={styles.listCard}>
+        {pendingBills.length ? pendingBills.map((bill, index) => (
+          <View key={bill.id} style={[styles.pendingRow, index !== pendingBills.length - 1 && styles.divider]}>
+            <Text style={styles.tenantName}>{bill.tenantName}</Text><Text style={styles.activityCaption}>Room {bill.room}</Text><Text style={styles.pendingValue}>{money(bill.pendingAmount)}</Text>
+          </View>
+        )) : <Text style={styles.emptyState}>No pending rent.</Text>}
+      </View>
+      <SectionTitle title="Exports" />
+      <View style={styles.exportGrid}>
+        <ExportButton label="Tenant CSV" onPress={() => exportCsv('pgcopilot-tenant-list.csv', reportPayload.tenantList)} />
+        <ExportButton label="Pending CSV" onPress={() => exportCsv('pgcopilot-pending-rent.csv', reportPayload.pendingRent)} />
+        <ExportButton label="Occupancy CSV" onPress={() => exportCsv('pgcopilot-occupancy.csv', reportPayload.occupancy)} />
+        <ExportButton label="Expense CSV" onPress={() => exportCsv('pgcopilot-expense-summary.csv', reportPayload.expenseSummary)} />
+        <ExportButton label="P&L CSV" onPress={() => exportCsv('pgcopilot-profit-loss.csv', reportPayload.profitLoss)} />
+        <ExportButton label="Excel report" onPress={() => exportExcel('pgcopilot-reports.xls', reportPayload)} />
+        <ExportButton label="PDF report" onPress={() => exportReportPdf(data, reportPayload)} />
+      </View>
+    </ScrollView>
+  );
+}
+
+function AddExpenseModal({
+  visible,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSubmit: (input: NewExpenseInput) => Promise<void>;
+}) {
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [category, setCategory] = useState<ExpenseCategory>('Food');
+  const [vendor, setVendor] = useState('');
+  const [notes, setNotes] = useState('');
+  const [bill, setBill] = useState<NewExpenseInput['bill']>();
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+
+  const pickBill = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ['image/*', 'application/pdf'],
+      copyToCacheDirectory: true,
+    });
+    if (!result.canceled && result.assets[0]) {
+      setBill({
+        uri: result.assets[0].uri,
+        name: result.assets[0].name,
+        mimeType: result.assets[0].mimeType,
+      });
+    }
+  };
+
+  const resetAndClose = () => {
+    setAmount('');
+    setDate(new Date().toISOString().slice(0, 10));
+    setCategory('Food');
+    setVendor('');
+    setNotes('');
+    setBill(undefined);
+    setError(undefined);
+    onClose();
+  };
+
+  const handleSubmit = async () => {
+    const expenseAmount = Number(amount || 0);
+    if (!expenseAmount || expenseAmount <= 0) {
+      setError('Enter a valid expense amount.');
+      return;
+    }
+    if (!date.trim()) {
+      setError('Enter expense date.');
+      return;
+    }
+    setSaving(true);
+    setError(undefined);
+    try {
+      await onSubmit({
+        amount: expenseAmount,
+        date: date.trim(),
+        category,
+        vendor: vendor.trim(),
+        notes: notes.trim(),
+        bill,
+      });
+      resetAndClose();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Unable to save expense.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" transparent>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <View style={styles.modalHeader}>
+            <View><Text style={styles.modalTitle}>Add expense</Text><Text style={styles.subtitle}>Track amount, category and bill proof</Text></View>
+            <TouchableOpacity onPress={resetAndClose}><AppIcon name="close" size={23} color={colors.ink} /></TouchableOpacity>
+          </View>
+          <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>AMOUNT</Text><TextInput placeholder="0" style={styles.fieldInput} value={amount} onChangeText={setAmount} keyboardType="numeric" /></View>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>DATE</Text><TextInput placeholder="YYYY-MM-DD" style={styles.fieldInput} value={date} onChangeText={setDate} /></View>
+            </View>
+            <View style={styles.availableBedBox}>
+              <Text style={styles.fieldLabel}>CATEGORY</Text>
+              <View style={styles.availableBedRow}>
+                {expenseCategoryOptions.map((item) => (
+                  <TouchableOpacity key={item} style={[styles.availableBedChip, category === item && styles.availableBedChipActive]} onPress={() => setCategory(item)}>
+                    <Text style={[styles.availableBedText, category === item && styles.availableBedTextActive]}>{item}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>VENDOR / PERSON</Text><TextInput placeholder="Vendor or staff name" style={styles.fieldInput} value={vendor} onChangeText={setVendor} /></View>
+            </View>
+            <View style={styles.formRow}>
+              <View style={[styles.formField, styles.flex]}><Text style={styles.fieldLabel}>NOTES</Text><TextInput placeholder="Optional notes" style={styles.fieldInput} value={notes} onChangeText={setNotes} /></View>
+            </View>
+            <TouchableOpacity style={styles.documentButton} onPress={pickBill}>
+              <AppIcon name={bill ? 'check-circle-outline' : 'paperclip'} size={18} color={bill ? colors.green : colors.muted} />
+              <View style={styles.flex}><Text style={styles.documentTitle}>Bill Upload</Text><Text style={styles.activityCaption}>{bill?.name ?? 'Image or PDF, optional'}</Text></View>
+            </TouchableOpacity>
+            {error ? <Text style={styles.authError}>{error}</Text> : null}
+            <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit} disabled={saving}><Text style={styles.primaryButtonText}>{saving ? 'Saving...' : 'Save expense'}</Text></TouchableOpacity>
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+type ReportRow = Record<string, string | number | boolean | undefined>;
+
+function buildReportPayload(
+  data: PgMasterData,
+  summary: ReturnType<typeof buildSummary>,
+  pendingBills: RentBill[],
+  expenseTotals: { category: ExpenseCategory; amount: number }[],
+) {
+  return {
+    tenantList: data.tenants.map((tenant) => ({
+      Name: tenant.name,
+      Mobile: tenant.mobile,
+      Room: tenant.room,
+      Status: tenant.admissionStatus ?? 'Active',
+      RentStatus: tenant.status,
+      MonthlyRent: tenant.rent,
+      Deposit: tenant.deposit ?? 0,
+      CompanyCollege: tenant.companyCollege ?? '',
+    })),
+    pendingRent: pendingBills.map((bill) => ({
+      Tenant: bill.tenantName,
+      Room: bill.room,
+      RentMonth: bill.rentMonth,
+      DueDate: bill.dueDate,
+      Amount: bill.amount,
+      Paid: bill.paidAmount,
+      Pending: bill.pendingAmount,
+      Status: bill.status,
+    })),
+    occupancy: [
+      { Metric: 'Total Beds', Value: summary.totalBeds },
+      { Metric: 'Occupied Beds', Value: summary.occupiedBeds },
+      { Metric: 'Vacant Beds', Value: summary.vacantBeds },
+      { Metric: 'Occupancy Rate', Value: `${summary.occupancyRate}%` },
+    ],
+    expenseSummary: expenseTotals.map((item) => ({ Category: item.category, Amount: item.amount })),
+    profitLoss: [
+      { Metric: 'Expected Rent', Value: summary.expectedRent },
+      { Metric: 'Collected Rent', Value: summary.collectedRent },
+      { Metric: 'Pending Rent', Value: summary.pendingRent },
+      { Metric: 'Expenses', Value: summary.expensesTotal },
+      { Metric: 'Profit', Value: summary.profit },
+    ],
+  };
+}
+
+function ExportButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return <TouchableOpacity style={styles.exportButton} onPress={onPress}><AppIcon name="download-outline" size={16} color={colors.green} /><Text style={styles.exportButtonText}>{label}</Text></TouchableOpacity>;
+}
+
+function escapeCsv(value: string | number | boolean | undefined) {
+  const text = String(value ?? '');
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function rowsToCsv(rows: ReportRow[]) {
+  if (!rows.length) return '';
+  const headers = Object.keys(rows[0]);
+  return [headers.map(escapeCsv).join(','), ...rows.map((row) => headers.map((header) => escapeCsv(row[header])).join(','))].join('\n');
+}
+
+function downloadWebFile(fileName: string, content: string, mimeType: string) {
+  if (Platform.OS !== 'web') return false;
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = globalThis.document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  globalThis.document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}
+
+function exportCsv(fileName: string, rows: ReportRow[]) {
+  downloadWebFile(fileName, rowsToCsv(rows), 'text/csv;charset=utf-8');
+}
+
+function reportTableHtml(title: string, rows: ReportRow[]) {
+  const headers = rows.length ? Object.keys(rows[0]) : ['Report'];
+  const bodyRows = rows.length ? rows : [{ Report: 'No data' }];
+  return `
+    <h2>${title}</h2>
+    <table>
+      <thead><tr>${headers.map((header) => `<th>${header}</th>`).join('')}</tr></thead>
+      <tbody>${bodyRows.map((row) => `<tr>${headers.map((header) => `<td>${String(row[header] ?? '')}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table>
+  `;
+}
+
+function reportHtml(data: PgMasterData, payload: ReturnType<typeof buildReportPayload>) {
+  return `
+    <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; color: #17231F; padding: 28px; }
+          h1 { margin-bottom: 4px; }
+          h2 { margin-top: 28px; }
+          table { border-collapse: collapse; width: 100%; }
+          th, td { border: 1px solid #E8ECE8; padding: 8px; text-align: left; font-size: 12px; }
+          th { background: #E6F4EE; }
+        </style>
+      </head>
+      <body>
+        <h1>PGCopilot Reports</h1>
+        <p>${data.propertyName}</p>
+        ${reportTableHtml('Tenant List', payload.tenantList)}
+        ${reportTableHtml('Pending Rent', payload.pendingRent)}
+        ${reportTableHtml('Occupancy', payload.occupancy)}
+        ${reportTableHtml('Expense Summary', payload.expenseSummary)}
+        ${reportTableHtml('Profit & Loss', payload.profitLoss)}
+      </body>
+    </html>
+  `;
+}
+
+function exportExcel(fileName: string, payload: ReturnType<typeof buildReportPayload>) {
+  const html = reportHtml({ propertyName: 'PGCopilot' } as PgMasterData, payload);
+  downloadWebFile(fileName, html, 'application/vnd.ms-excel;charset=utf-8');
+}
+
+async function exportReportPdf(data: PgMasterData, payload: ReturnType<typeof buildReportPayload>) {
+  const html = reportHtml(data, payload);
+  if (downloadWebFile('pgcopilot-reports.html', html, 'text/html;charset=utf-8')) return;
+  const printed = await Print.printToFileAsync({ html });
+  if (await Sharing.isAvailableAsync()) {
+    await Sharing.shareAsync(printed.uri, { mimeType: 'application/pdf', dialogTitle: 'PGCopilot Reports' });
+  }
 }
 
 function normaliseIndianPhone(value: string) {
@@ -2080,6 +2483,12 @@ export default function App() {
     setDataError(undefined);
   };
 
+  const handleAddExpense = async (input: NewExpenseInput) => {
+    const nextData = await saveExpense(input, pgData);
+    setPgData(nextData);
+    setDataError(undefined);
+  };
+
   const handleSelectHostel = async (hostelId: string) => {
     setSelectedHostelId(hostelId);
     setTab('Home');
@@ -2090,7 +2499,7 @@ export default function App() {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
     if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} onUpdateTenant={handleUpdateTenant} onVacateTenant={handleVacateTenant} onRecordPayment={handleRecordPayment} onGenerateRent={handleGenerateRent} />;
     if (tab === 'Rent') return <Rent data={pgData} onGenerateRent={handleGenerateRent} onRecordPayment={handleRecordPayment} />;
-    if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onLogout={handleLogout} />;
+    if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onAddExpense={handleAddExpense} onLogout={handleLogout} />;
     return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} onSelectHostel={handleSelectHostel} onCreateHostel={handleCreateHostel} />;
   }, [tab, pgData, loadingData, dataSource, dataError]);
 
@@ -2149,6 +2558,8 @@ const styles = StyleSheet.create({
   sectionHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4, marginBottom: 11 },
   sectionTitle: { fontSize: 16, fontWeight: '800', color: colors.ink },
   sectionAction: { fontSize: 12, fontWeight: '700', color: colors.green },
+  sectionButton: { borderRadius: 14, backgroundColor: colors.paleGreen, paddingHorizontal: 10, paddingVertical: 7 },
+  sectionButtonText: { color: colors.green, fontSize: 11, fontWeight: '800' },
   attentionRow: { flexDirection: 'row', gap: 10, marginBottom: 21 },
   attentionCard: { width: '48.6%', borderRadius: 15, padding: 14, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
   attentionIcon: { width: 35, height: 35, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
@@ -2160,6 +2571,7 @@ const styles = StyleSheet.create({
   quickIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: colors.paleGreen, alignItems: 'center', justifyContent: 'center', marginBottom: 7 },
   quickLabel: { color: colors.ink, fontWeight: '700', fontSize: 11, textAlign: 'center' },
   listCard: { backgroundColor: colors.card, borderRadius: 15, borderWidth: 1, borderColor: colors.line, marginBottom: 20, overflow: 'hidden' },
+  emptyState: { color: colors.muted, fontSize: 12, padding: 14 },
   activity: { flexDirection: 'row', alignItems: 'center', gap: 11, padding: 13 },
   divider: { borderBottomWidth: 1, borderBottomColor: colors.line },
   activityIcon: { width: 37, height: 37, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
@@ -2280,6 +2692,11 @@ const styles = StyleSheet.create({
   expenseHero: { backgroundColor: colors.ink, borderRadius: 16, padding: 18, marginBottom: 20 },
   expenseHeroValue: { color: '#FFF', fontWeight: '800', fontSize: 29, marginTop: 8 },
   expenseHeroCaption: { color: '#76D2B2', marginTop: 6, fontSize: 11, fontWeight: '700' },
+  expenseRow: { padding: 13, flexDirection: 'row', alignItems: 'flex-start', gap: 11 },
+  expenseNotes: { color: colors.ink, fontSize: 10.5, marginTop: 4 },
+  inlineLink: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 7 },
+  inlineLinkText: { color: colors.green, fontSize: 10, fontWeight: '800' },
+  categoryRow: { padding: 13, flexDirection: 'row', alignItems: 'center' },
   foodCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingVertical: 18 },
   foodDivider: { width: 1, height: 31, backgroundColor: colors.line },
   foodValue: { color: colors.ink, fontWeight: '800', fontSize: 16 },
@@ -2288,6 +2705,8 @@ const styles = StyleSheet.create({
   pnlRow: { flexDirection: 'row', gap: 10, marginBottom: 20 },
   pnlCard: { width: '48.7%', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 13, padding: 14 },
   pnlValue: { fontWeight: '800', fontSize: 18 },
+  reportMetricGrid: { flexDirection: 'row', gap: 8, marginBottom: 20 },
+  reportMetric: { flex: 1, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 13, padding: 12 },
   occupancyCard: { flexDirection: 'row', alignItems: 'center', gap: 20, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 16, marginBottom: 20 },
   occupancyRing: { width: 84, height: 84, borderRadius: 42, borderWidth: 9, borderColor: colors.green, alignItems: 'center', justifyContent: 'center' },
   occupancyValue: { color: colors.ink, fontWeight: '800', fontSize: 18 },
@@ -2297,6 +2716,9 @@ const styles = StyleSheet.create({
   legendValue: { color: colors.ink, fontWeight: '800', fontSize: 12 },
   pendingRow: { padding: 13, flexDirection: 'row', alignItems: 'center', gap: 8 },
   pendingValue: { marginLeft: 'auto', color: colors.red, fontWeight: '800', fontSize: 13 },
+  exportGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 24 },
+  exportButton: { width: '48%', minHeight: 44, borderRadius: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 8 },
+  exportButtonText: { color: colors.ink, fontSize: 11, fontWeight: '800' },
   bottomNav: { height: 68, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', width: '100%', maxWidth: 520, alignSelf: 'center' },
   navItem: { alignItems: 'center', minWidth: 55, gap: 4 },
   navText: { color: colors.muted, fontSize: 9.5, fontWeight: '700' },

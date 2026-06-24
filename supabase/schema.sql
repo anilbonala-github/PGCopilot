@@ -158,12 +158,26 @@ create table if not exists public.expenses (
   label text not null,
   category text not null default 'Other',
   amount numeric not null default 0,
+  expense_date date not null default current_date,
+  vendor text,
+  notes text,
+  bill_bucket_id text,
+  bill_storage_path text,
+  bill_file_name text,
+  bill_mime_type text,
   expense_month date not null default date_trunc('month', current_date)::date,
   created_at timestamptz not null default now()
 );
 
 alter table public.expenses add column if not exists owner_id uuid references auth.users(id) on delete set null;
 alter table public.expenses add column if not exists created_by uuid references auth.users(id) on delete set null;
+alter table public.expenses add column if not exists expense_date date not null default current_date;
+alter table public.expenses add column if not exists vendor text;
+alter table public.expenses add column if not exists notes text;
+alter table public.expenses add column if not exists bill_bucket_id text;
+alter table public.expenses add column if not exists bill_storage_path text;
+alter table public.expenses add column if not exists bill_file_name text;
+alter table public.expenses add column if not exists bill_mime_type text;
 
 create table if not exists public.rent_payments (
   id uuid primary key default gen_random_uuid(),
@@ -1068,6 +1082,19 @@ on conflict (id) do update
       file_size_limit = excluded.file_size_limit,
       allowed_mime_types = excluded.allowed_mime_types;
 
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'expense-bills',
+  'expense-bills',
+  false,
+  10485760,
+  array['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+)
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
 drop policy if exists "MVP read hostels" on public.hostels;
 drop policy if exists "MVP write hostels" on public.hostels;
 drop policy if exists "MVP read rooms" on public.rooms;
@@ -1245,6 +1272,10 @@ drop policy if exists "Members read tenant document files" on storage.objects;
 drop policy if exists "Owner staff upload tenant document files" on storage.objects;
 drop policy if exists "Owner staff update tenant document files" on storage.objects;
 drop policy if exists "Owners delete tenant document files" on storage.objects;
+drop policy if exists "Members read expense bill files" on storage.objects;
+drop policy if exists "Owner staff upload expense bill files" on storage.objects;
+drop policy if exists "Owner staff update expense bill files" on storage.objects;
+drop policy if exists "Owners delete expense bill files" on storage.objects;
 create policy "Members read tenant document files" on storage.objects
   for select using (
     bucket_id = 'tenant-documents'
@@ -1281,6 +1312,31 @@ create policy "Owner staff update tenant document files" on storage.objects
 create policy "Owners delete tenant document files" on storage.objects
   for delete using (
     bucket_id = 'tenant-documents'
+    and public.is_hostel_owner(public.storage_path_hostel_id(name))
+  );
+
+create policy "Members read expense bill files" on storage.objects
+  for select using (
+    bucket_id = 'expense-bills'
+    and public.is_hostel_member(public.storage_path_hostel_id(name))
+  );
+create policy "Owner staff upload expense bill files" on storage.objects
+  for insert with check (
+    bucket_id = 'expense-bills'
+    and public.can_write_hostel_data(public.storage_path_hostel_id(name))
+  );
+create policy "Owner staff update expense bill files" on storage.objects
+  for update using (
+    bucket_id = 'expense-bills'
+    and public.can_write_hostel_data(public.storage_path_hostel_id(name))
+  )
+  with check (
+    bucket_id = 'expense-bills'
+    and public.can_write_hostel_data(public.storage_path_hostel_id(name))
+  );
+create policy "Owners delete expense bill files" on storage.objects
+  for delete using (
+    bucket_id = 'expense-bills'
     and public.is_hostel_owner(public.storage_path_hostel_id(name))
   );
 
