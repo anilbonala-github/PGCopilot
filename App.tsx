@@ -56,8 +56,19 @@ import {
 } from './src/lib/pgcopilotData';
 
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
-type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'More';
+type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'AI' | 'More';
 type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
+type AiIntent = 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'general';
+
+type AiAnswer = {
+  type: AiIntent;
+  title: string;
+  answer: string;
+  bullets: string[];
+  metrics?: { label: string; value: string; tone: Tone }[];
+  actions?: string[];
+  source: 'local' | 'gemini';
+};
 
 const colors = {
   bg: '#F6F6F1',
@@ -230,6 +241,7 @@ function Dashboard({
     { label: 'Occupancy', value: `${summary.occupancyRate}%`, icon: 'chart-donut' as IconName, tone: 'purple' as Tone },
   ];
   const recentActivities = (data.tenantActivities ?? []).slice(0, 3);
+  const aiInsights = buildAiInsights(data).slice(0, 4);
   return (
     <>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
@@ -291,6 +303,19 @@ function Dashboard({
         </View>
       </View>
 
+      <SectionTitle title="AI insights" action="Ask AI" />
+      <View style={styles.aiInsightGrid}>
+        {aiInsights.map((insight) => (
+          <TouchableOpacity key={insight.title} style={styles.aiInsightCard} onPress={() => onNavigate('AI')}>
+            <View style={[styles.aiInsightIcon, { backgroundColor: toneBackground(insight.tone) }]}>
+              <AppIcon name={insight.icon} size={18} color={colors[insight.tone]} />
+            </View>
+            <Text style={styles.aiInsightTitle}>{insight.title}</Text>
+            <Text style={styles.aiInsightText}>{insight.text}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       <SectionTitle title="Needs attention" action="View all" />
       <View style={styles.attentionRow}>
         <TouchableOpacity style={styles.attentionCard} onPress={() => onNavigate('Rent')}>
@@ -317,7 +342,7 @@ function Dashboard({
           ['account-plus-outline', 'Add tenant', 'Tenants'],
           ['cash-plus', 'Record rent', 'Rent'],
           ['bed-outline', 'Manage beds', 'Rooms'],
-          ['chart-box-outline', 'Reports', 'More'],
+          ['robot-outline', 'Ask AI', 'AI'],
         ].map(([icon, label, tab]) => (
           <TouchableOpacity key={label} style={styles.quickAction} onPress={() => onNavigate(tab as Tab)}>
             <View style={styles.quickIcon}><AppIcon name={icon as IconName} size={21} /></View>
@@ -1563,11 +1588,13 @@ function More({
   data,
   onInviteStaff,
   onAddExpense,
+  onNavigate,
   onLogout,
 }: {
   data: PgMasterData;
   onInviteStaff: (phone: string) => Promise<void>;
   onAddExpense: (input: NewExpenseInput) => Promise<void>;
+  onNavigate: (tab: Tab) => void;
   onLogout: () => Promise<void>;
 }) {
   const [view, setView] = useState<'menu' | 'expenses' | 'reports'>('menu');
@@ -1605,7 +1632,8 @@ function More({
       <View style={styles.menuCard}>
         <MenuRow icon="silverware-fork-knife" label="Food management" caption="Meals, groceries and cost per resident" tone="orange" />
         <MenuRow icon="file-document-outline" label="Expense management" caption="Utilities, salaries and supplies" tone="blue" onPress={() => setView('expenses')} />
-        <MenuRow icon="chart-box-outline" label="Reports & analytics" caption="Occupancy, pending rents and P&L" tone="purple" onPress={() => setView('reports')} last />
+        <MenuRow icon="chart-box-outline" label="Reports & analytics" caption="Occupancy, pending rents and P&L" tone="purple" onPress={() => setView('reports')} />
+        <MenuRow icon="robot-outline" label="AI Copilot" caption="Ask rent, bed, expense and profit questions" tone="green" onPress={() => onNavigate('AI')} last />
       </View>
       <SectionTitle title="Property settings" />
       <View style={styles.menuCard}>
@@ -2090,6 +2118,368 @@ async function exportReportPdf(data: PgMasterData, payload: ReturnType<typeof bu
   }
 }
 
+function buildAiInsights(data: PgMasterData): { title: string; text: string; icon: IconName; tone: Tone }[] {
+  const summary = buildSummary(data);
+  const pendingCount = getPendingRentRows(data).length;
+  const vacantBeds = getVacantBeds(data);
+  const topExpense = getTopExpenseCategory(data);
+  return [
+    {
+      title: 'Pending rent',
+      text: pendingCount ? `${pendingCount} tenants pending - ${money(summary.pendingRent)} due` : 'All generated rent is paid',
+      icon: 'wallet-outline',
+      tone: summary.pendingRent ? 'red' : 'green',
+    },
+    {
+      title: 'Vacant beds',
+      text: vacantBeds.length ? `${vacantBeds.length} beds available now` : 'No vacant beds available',
+      icon: 'bed-empty',
+      tone: vacantBeds.length ? 'orange' : 'green',
+    },
+    {
+      title: 'Occupancy',
+      text: `${summary.occupancyRate}% occupied across ${summary.totalBeds} beds`,
+      icon: 'chart-donut',
+      tone: summary.occupancyRate >= 90 ? 'green' : summary.occupancyRate >= 75 ? 'orange' : 'red',
+    },
+    {
+      title: 'Profit',
+      text: `${money(summary.profit)} after ${money(summary.expensesTotal)} expenses`,
+      icon: 'chart-line',
+      tone: summary.profit >= 0 ? 'green' : 'red',
+    },
+    {
+      title: 'Expense watch',
+      text: topExpense ? `${topExpense.category} is highest at ${money(topExpense.amount)}` : 'No expenses recorded yet',
+      icon: 'alert-decagram-outline',
+      tone: topExpense ? 'purple' : 'green',
+    },
+  ];
+}
+
+function detectAiIntent(question: string): AiIntent {
+  const text = question.toLowerCase();
+  if (text.includes('not paid') || text.includes('pending rent') || text.includes('rent due') || text.includes('unpaid')) return 'pending_rent';
+  if (text.includes('vacant') || text.includes('available bed') || text.includes('free bed') || text.includes('available room')) return 'vacant_beds';
+  if (text.includes('vacating') || text.includes('leaving') || text.includes('departure') || text.includes('vacate')) return 'vacating_next_month';
+  if (text.includes('decrease') || text.includes('down') || text.includes('why') && text.includes('profit')) return 'profit_decrease';
+  if (text.includes('profit') || text.includes('income') || text.includes('net')) return 'profit';
+  if (text.includes('joined') || text.includes('admission') || text.includes('new tenant')) return 'new_admissions';
+  if (text.includes('expense') || text.includes('food') || text.includes('electricity') || text.includes('cost')) return 'expense_analysis';
+  return 'general';
+}
+
+function getPendingRentRows(data: PgMasterData) {
+  const bills = (data.rentBills ?? []).filter((bill) => bill.status !== 'Paid' && bill.pendingAmount > 0);
+  if (bills.length) {
+    return bills.map((bill) => ({
+      tenantName: bill.tenantName,
+      room: bill.room,
+      pendingAmount: bill.pendingAmount,
+      dueDate: bill.dueDate,
+    }));
+  }
+  return data.tenants
+    .filter((tenant) => tenant.admissionStatus !== 'Vacated' && tenant.status !== 'Paid')
+    .map((tenant) => ({
+      tenantName: tenant.name,
+      room: tenant.room,
+      pendingAmount: tenant.rent,
+      dueDate: `Day ${tenant.rentDueDay ?? 5}`,
+    }));
+}
+
+function getVacantBeds(data: PgMasterData) {
+  return data.rooms.flatMap((room) => room.beds.map((status, index) => ({
+    status,
+    room: room.number,
+    floor: room.floor,
+    bed: room.bedNumbers?.[index] ?? `${room.number}-${index + 1}`,
+  }))).filter((item) => item.status === 'Vacant');
+}
+
+function getNextMonthVacates(data: PgMasterData) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 2, 0, 23, 59, 59);
+  return data.tenants.filter((tenant) => {
+    if (!tenant.vacateDate || tenant.admissionStatus === 'Vacated') return false;
+    const vacateDate = new Date(tenant.vacateDate);
+    return vacateDate >= start && vacateDate <= end;
+  });
+}
+
+function getThisMonthAdmissions(data: PgMasterData) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+  return data.tenants.filter((tenant) => {
+    if (!tenant.joiningDate) return false;
+    const joiningDate = new Date(tenant.joiningDate);
+    return joiningDate >= start && joiningDate <= end;
+  });
+}
+
+function getTopExpenseCategory(data: PgMasterData) {
+  const totals = expenseCategoryOptions.map((category) => ({
+    category,
+    amount: data.expenses.filter((expense) => expense.category === category || (!expense.category && expense.label.toLowerCase().includes(category.toLowerCase()))).reduce((sum, expense) => sum + expense.amount, 0),
+  })).filter((item) => item.amount > 0).sort((a, b) => b.amount - a.amount);
+  return totals[0];
+}
+
+function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
+  const intent = detectAiIntent(question);
+  const summary = buildSummary(data);
+  const pendingRows = getPendingRentRows(data);
+  const vacantBeds = getVacantBeds(data);
+  const nextMonthVacates = getNextMonthVacates(data);
+  const admissions = getThisMonthAdmissions(data);
+  const topExpense = getTopExpenseCategory(data);
+
+  if (intent === 'pending_rent') {
+    const total = pendingRows.reduce((sum, item) => sum + item.pendingAmount, 0);
+    return {
+      type: intent,
+      title: 'Pending rent',
+      answer: pendingRows.length ? `${pendingRows.length} tenants have pending rent. Total pending amount is ${money(total)}.` : 'No pending rent found for the current generated bills.',
+      bullets: pendingRows.slice(0, 8).map((item) => `${item.tenantName} - ${money(item.pendingAmount)} pending, Room ${item.room}, Due ${item.dueDate}`),
+      metrics: [
+        { label: 'Pending tenants', value: String(pendingRows.length), tone: pendingRows.length ? 'red' : 'green' },
+        { label: 'Pending amount', value: money(total), tone: pendingRows.length ? 'red' : 'green' },
+      ],
+      actions: pendingRows.length ? ['Open Rent tab and send reminders.', 'Collect partial payments for high pending amounts first.'] : ['No reminder needed right now.'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'vacant_beds') {
+    return {
+      type: intent,
+      title: 'Vacant beds',
+      answer: vacantBeds.length ? `${vacantBeds.length} beds are vacant and available for admission.` : 'No vacant beds are available right now.',
+      bullets: vacantBeds.slice(0, 12).map((item) => `${item.bed} - Room ${item.room}, ${item.floor}`),
+      metrics: [
+        { label: 'Vacant beds', value: String(vacantBeds.length), tone: vacantBeds.length ? 'orange' : 'green' },
+        { label: 'Occupancy', value: `${summary.occupancyRate}%`, tone: summary.occupancyRate >= 90 ? 'green' : 'orange' },
+      ],
+      actions: vacantBeds.length ? ['Use vacant bed list during new tenant admission.', 'Prioritize rooms with multiple vacant beds.'] : ['Keep a waitlist for upcoming vacates.'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'vacating_next_month') {
+    return {
+      type: intent,
+      title: 'Expected departures',
+      answer: nextMonthVacates.length ? `${nextMonthVacates.length} tenants are marked to vacate next month.` : 'No tenants are marked as vacating next month.',
+      bullets: nextMonthVacates.map((tenant) => `${tenant.name} - Room ${tenant.room}, Vacate date ${tenant.vacateDate}`),
+      metrics: [
+        { label: 'Next month vacates', value: String(nextMonthVacates.length), tone: nextMonthVacates.length ? 'orange' : 'green' },
+      ],
+      actions: nextMonthVacates.length ? ['Confirm checkout dates.', 'Start filling these beds before they become vacant.'] : ['No checkout follow-up needed for next month.'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'profit') {
+    return {
+      type: intent,
+      title: "This month's profit",
+      answer: `This month's net profit is ${money(summary.profit)}.`,
+      bullets: [`Income: ${money(summary.income)}`, `Expenses: ${money(summary.expensesTotal)}`, `Net profit: ${money(summary.profit)}`],
+      metrics: [
+        { label: 'Income', value: money(summary.income), tone: 'green' },
+        { label: 'Expenses', value: money(summary.expensesTotal), tone: 'red' },
+        { label: 'Net profit', value: money(summary.profit), tone: summary.profit >= 0 ? 'green' : 'red' },
+      ],
+      actions: summary.pendingRent ? ['Recover pending rent to improve cash flow.'] : ['Profit is clean against collected rent.'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'profit_decrease') {
+    const riskBullets = [
+      summary.pendingRent > 0 ? `Pending rent is ${money(summary.pendingRent)}, which directly reduces cash collected.` : 'Pending rent is currently under control.',
+      summary.vacantBeds > 0 ? `${summary.vacantBeds} vacant beds reduce expected monthly income.` : 'Vacancy is not a major issue right now.',
+      topExpense ? `${topExpense.category} is the highest expense category at ${money(topExpense.amount)}.` : 'No expense categories are recorded yet.',
+    ];
+    return {
+      type: intent,
+      title: 'Profit decrease analysis',
+      answer: 'I can explain the current profit pressure from available data. Month-over-month comparison will become sharper after more historical expense and rent records are available.',
+      bullets: riskBullets,
+      metrics: [
+        { label: 'Occupancy', value: `${summary.occupancyRate}%`, tone: summary.occupancyRate >= 90 ? 'green' : 'orange' },
+        { label: 'Pending rent', value: money(summary.pendingRent), tone: summary.pendingRent ? 'red' : 'green' },
+        { label: 'Expenses', value: money(summary.expensesTotal), tone: 'red' },
+      ],
+      actions: ['Follow up on pending rent first.', 'Review the top expense category.', 'Fill vacant beds before the next billing cycle.'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'new_admissions') {
+    return {
+      type: intent,
+      title: 'New admissions',
+      answer: admissions.length ? `${admissions.length} tenants joined this month.` : 'No new admissions found for this month.',
+      bullets: admissions.map((tenant) => `${tenant.name} - Room ${tenant.room}, Joined ${tenant.joiningDate}`),
+      metrics: [{ label: 'Joined this month', value: String(admissions.length), tone: admissions.length ? 'blue' : 'green' }],
+      actions: admissions.length ? ['Check document completion for new tenants.'] : ['Admissions pipeline is quiet this month.'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'expense_analysis') {
+    return {
+      type: intent,
+      title: 'Expense analysis',
+      answer: topExpense ? `${topExpense.category} is currently the largest expense category at ${money(topExpense.amount)}.` : 'No expenses have been recorded yet.',
+      bullets: expenseCategoryOptions.map((category) => {
+        const amount = data.expenses.filter((expense) => expense.category === category || (!expense.category && expense.label.toLowerCase().includes(category.toLowerCase()))).reduce((sum, expense) => sum + expense.amount, 0);
+        return amount ? `${category}: ${money(amount)}` : '';
+      }).filter(Boolean),
+      metrics: [
+        { label: 'Total expenses', value: money(summary.expensesTotal), tone: 'red' },
+        { label: 'Top category', value: topExpense?.category ?? 'None', tone: 'purple' },
+      ],
+      actions: topExpense ? [`Review ${topExpense.category} bills for unusual increases.`] : ['Start adding expenses to unlock analysis.'],
+      source: 'local',
+    };
+  }
+
+  return {
+    type: 'general',
+    title: 'Try a hostel question',
+    answer: 'I can answer rent, vacant bed, vacate, profit, admission, and expense questions from your PGCopilot data.',
+    bullets: ['Who has not paid rent?', 'Which beds are vacant?', "Show this month's profit.", 'Why did profit decrease?'],
+    actions: ['Tap one of the suggested questions below.'],
+    source: 'local',
+  };
+}
+
+async function askAiCopilot(question: string, data: PgMasterData): Promise<AiAnswer> {
+  const localAnswer = buildLocalAiAnswer(question, data);
+  if (!isSupabaseConfigured || !supabase || !data.hostelId) return localAnswer;
+
+  try {
+    const result = await supabase.functions.invoke('ask-ai', {
+      body: { hostelId: data.hostelId, question },
+    });
+    if (!result.error && result.data?.answer) {
+      return {
+        ...localAnswer,
+        answer: String(result.data.answer),
+        bullets: Array.isArray(result.data.bullets) ? result.data.bullets.map(String) : localAnswer.bullets,
+        source: 'gemini',
+      };
+    }
+  } catch {
+    // The local intent engine keeps Copilot useful until the Edge Function is deployed.
+  }
+  return localAnswer;
+}
+
+function AICopilot({ data }: { data: PgMasterData }) {
+  const suggestions = [
+    'Who has not paid rent?',
+    'Which beds are vacant?',
+    'Who is vacating next month?',
+    "Show this month's profit.",
+    'Why did profit decrease?',
+    'Who joined this month?',
+  ];
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState<AiAnswer>(() => buildLocalAiAnswer("Show this month's profit.", data));
+  const [loading, setLoading] = useState(false);
+
+  const submitQuestion = async (value = question) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    Keyboard.dismiss();
+    setQuestion(trimmed);
+    setAnswer(buildLocalAiAnswer(trimmed, data));
+    setLoading(true);
+    const nextAnswer = await askAiCopilot(trimmed, data);
+    setAnswer(nextAnswer);
+    setLoading(false);
+  };
+
+  return (
+    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <View style={styles.aiHero}>
+        <View style={styles.aiOrb}><AppIcon name="robot-outline" size={30} color="#FFF" /></View>
+        <Text style={styles.aiHeroTitle}>AI Copilot</Text>
+        <Text style={styles.aiHeroText}>Ask your hostel data. Rent, beds, expenses and profit in seconds.</Text>
+      </View>
+
+      <View style={styles.aiAskCard}>
+        <Text style={styles.fieldLabel}>ASK PGCOPILOT</Text>
+        <View style={styles.aiInputRow}>
+          <TextInput
+            style={styles.aiInput}
+            placeholder="Example: Who has not paid rent?"
+            value={question}
+            onChangeText={setQuestion}
+            returnKeyType="send"
+            onSubmitEditing={() => submitQuestion()}
+          />
+          <TouchableOpacity style={styles.aiSendButton} onPress={() => submitQuestion()} disabled={loading}>
+            <AppIcon name={loading ? 'timer-sand' : 'send'} size={18} color="#FFF" />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.aiSuggestionScroller}>
+        {suggestions.map((item) => (
+          <TouchableOpacity key={item} style={styles.aiSuggestionChip} onPress={() => submitQuestion(item)}>
+            <Text style={styles.aiSuggestionText}>{item}</Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      <View style={styles.aiAnswerCard}>
+        <View style={styles.aiAnswerHeader}>
+          <View>
+            <Text style={styles.cardEyebrow}>{answer.source === 'gemini' ? 'GEMINI ASSISTED' : 'SMART DATA ANSWER'}</Text>
+            <Text style={styles.aiAnswerTitle}>{answer.title}</Text>
+          </View>
+          <Chip label={answer.source === 'gemini' ? 'AI' : 'Local'} tone={answer.source === 'gemini' ? 'purple' : 'green'} />
+        </View>
+        <Text style={styles.aiAnswerText}>{answer.answer}</Text>
+        {answer.metrics?.length ? (
+          <View style={styles.aiMetricRow}>
+            {answer.metrics.map((item) => (
+              <View key={item.label} style={styles.aiMetricCard}>
+                <Text style={styles.smallMuted}>{item.label}</Text>
+                <Text style={[styles.aiMetricValue, { color: colors[item.tone] }]}>{item.value}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        {answer.bullets.length ? (
+          <View style={styles.aiBulletList}>
+            {answer.bullets.map((item) => (
+              <View key={item} style={styles.aiBulletRow}>
+                <View style={styles.aiBulletDot} />
+                <Text style={styles.aiBulletText}>{item}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
+
+      <SectionTitle title="Recommended actions" />
+      <View style={styles.listCard}>
+        {(answer.actions ?? []).map((item, index, all) => (
+          <Activity key={item} icon="lightbulb-on-outline" tone="orange" title={item} caption="Suggested by PGCopilot AI" last={index === all.length - 1} />
+        ))}
+      </View>
+    </ScrollView>
+  );
+}
+
 function normaliseIndianPhone(value: string) {
   const digits = value.replace(/\D/g, '');
   if (digits.length === 10) return `+91${digits}`;
@@ -2302,6 +2692,7 @@ function BottomNav({ active, onPress }: { active: Tab; onPress: (tab: Tab) => vo
     ['Rooms', 'bed-outline', 'bed'],
     ['Tenants', 'account-group-outline', 'account-group'],
     ['Rent', 'wallet-outline', 'wallet'],
+    ['AI', 'robot-outline', 'robot'],
     ['More', 'dots-grid', 'dots-grid'],
   ];
   return (
@@ -2499,7 +2890,8 @@ export default function App() {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
     if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} onUpdateTenant={handleUpdateTenant} onVacateTenant={handleVacateTenant} onRecordPayment={handleRecordPayment} onGenerateRent={handleGenerateRent} />;
     if (tab === 'Rent') return <Rent data={pgData} onGenerateRent={handleGenerateRent} onRecordPayment={handleRecordPayment} />;
-    if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onAddExpense={handleAddExpense} onLogout={handleLogout} />;
+    if (tab === 'AI') return <AICopilot data={pgData} />;
+    if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onAddExpense={handleAddExpense} onNavigate={setTab} onLogout={handleLogout} />;
     return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} onSelectHostel={handleSelectHostel} onCreateHostel={handleCreateHostel} />;
   }, [tab, pgData, loadingData, dataSource, dataError]);
 
@@ -2555,6 +2947,11 @@ const styles = StyleSheet.create({
   smallStrong: { color: '#FFF', fontWeight: '700', fontSize: 13 },
   remindButton: { marginLeft: 'auto', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, backgroundColor: '#E2F3ED', flexDirection: 'row', gap: 5, alignItems: 'center' },
   remindText: { color: colors.green, fontWeight: '800', fontSize: 11 },
+  aiInsightGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 18 },
+  aiInsightCard: { width: '48%', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 13, marginBottom: 10 },
+  aiInsightIcon: { width: 34, height: 34, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginBottom: 10 },
+  aiInsightTitle: { color: colors.ink, fontSize: 13, fontWeight: '800' },
+  aiInsightText: { color: colors.muted, fontSize: 10.5, lineHeight: 15, marginTop: 5 },
   sectionHeading: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4, marginBottom: 11 },
   sectionTitle: { fontSize: 16, fontWeight: '800', color: colors.ink },
   sectionAction: { fontSize: 12, fontWeight: '700', color: colors.green },
@@ -2719,9 +3116,31 @@ const styles = StyleSheet.create({
   exportGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 24 },
   exportButton: { width: '48%', minHeight: 44, borderRadius: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 8 },
   exportButtonText: { color: colors.ink, fontSize: 11, fontWeight: '800' },
+  aiHero: { backgroundColor: colors.ink, borderRadius: 22, padding: 22, marginBottom: 14, overflow: 'hidden' },
+  aiOrb: { width: 58, height: 58, borderRadius: 21, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', marginBottom: 15 },
+  aiHeroTitle: { color: '#FFF', fontSize: 29, fontWeight: '900', letterSpacing: -0.8 },
+  aiHeroText: { color: '#B9CAC4', fontSize: 13, lineHeight: 19, marginTop: 8 },
+  aiAskCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 14, marginBottom: 12 },
+  aiInputRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8 },
+  aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, outlineStyle: 'none' } as any,
+  aiSendButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
+  aiSuggestionScroller: { marginBottom: 15 },
+  aiSuggestionChip: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, paddingHorizontal: 13, paddingVertical: 9, marginRight: 8 },
+  aiSuggestionText: { color: colors.ink, fontSize: 11, fontWeight: '800' },
+  aiAnswerCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 18 },
+  aiAnswerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
+  aiAnswerTitle: { color: colors.ink, fontSize: 20, fontWeight: '900', marginTop: 4 },
+  aiAnswerText: { color: colors.ink, fontSize: 13, lineHeight: 20 },
+  aiMetricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
+  aiMetricCard: { flexGrow: 1, minWidth: '30%', backgroundColor: colors.bg, borderRadius: 12, padding: 10 },
+  aiMetricValue: { fontSize: 15, fontWeight: '900' },
+  aiBulletList: { marginTop: 14, gap: 9 },
+  aiBulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  aiBulletDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.green, marginTop: 6 },
+  aiBulletText: { flex: 1, color: colors.muted, fontSize: 12, lineHeight: 17 },
   bottomNav: { height: 68, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', width: '100%', maxWidth: 520, alignSelf: 'center' },
-  navItem: { alignItems: 'center', minWidth: 55, gap: 4 },
-  navText: { color: colors.muted, fontSize: 9.5, fontWeight: '700' },
+  navItem: { alignItems: 'center', minWidth: 48, gap: 4 },
+  navText: { color: colors.muted, fontSize: 9, fontWeight: '700' },
   navTextActive: { color: colors.green },
   loginScreen: { flex: 1, backgroundColor: colors.bg, justifyContent: 'space-between', padding: 22 },
   loginKeyboardContent: { flex: 1, justifyContent: 'space-between' },

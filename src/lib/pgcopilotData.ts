@@ -269,6 +269,21 @@ export function buildSummary(data: PgMasterData) {
   const maintenanceBeds = statuses.filter((status) => status === 'Maintenance').length;
   const totalBeds = statuses.length;
   const activeTenants = data.tenants.filter((tenant) => tenant.admissionStatus !== 'Vacated');
+  const now = new Date();
+  const thirtyDaysFromNow = new Date(now);
+  thirtyDaysFromNow.setDate(now.getDate() + 30);
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const upcomingVacates = activeTenants.filter((tenant) => {
+    if (!tenant.vacateDate) return false;
+    const vacateDate = new Date(tenant.vacateDate);
+    return vacateDate >= now && vacateDate <= thirtyDaysFromNow;
+  }).length;
+  const newAdmissions = activeTenants.filter((tenant) => {
+    if (!tenant.joiningDate) return false;
+    const joiningDate = new Date(tenant.joiningDate);
+    return joiningDate >= startOfMonth && joiningDate <= endOfMonth;
+  }).length;
   const expectedRent = activeTenants.reduce((sum, tenant) => sum + tenant.rent, 0);
   const pendingRent = activeTenants
     .filter((tenant) => tenant.status !== 'Paid')
@@ -293,8 +308,8 @@ export function buildSummary(data: PgMasterData) {
     collectedRent: paidRent,
     pendingRent: unpaidRent,
     activeTenants: activeTenants.length,
-    newAdmissions: Math.min(6, activeTenants.length),
-    upcomingVacates: 0,
+    newAdmissions,
+    upcomingVacates,
     income: Math.max(billedRent, paidRent),
     expensesTotal,
     profit: Math.max(billedRent, paidRent) - expensesTotal,
