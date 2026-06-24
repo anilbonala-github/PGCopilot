@@ -44,6 +44,7 @@ import {
   type RentReceipt,
   type PgMasterData,
   type Tenant,
+  type TenantDocument,
   type TenantDocumentInput,
   type TenantDocumentType,
   type UpdateTenantInput,
@@ -856,6 +857,8 @@ function EditTenantModal({
   const [foodIncluded, setFoodIncluded] = useState(true);
   const [rentDueDay, setRentDueDay] = useState('5');
   const [status, setStatus] = useState<'Active' | 'Vacated'>('Active');
+  const [documents, setDocuments] = useState<TenantDocumentInput[]>([]);
+  const [previewDocument, setPreviewDocument] = useState<TenantDocument | undefined>();
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | undefined>();
 
@@ -873,8 +876,30 @@ function EditTenantModal({
     setFoodIncluded(Boolean(tenant.foodIncluded));
     setRentDueDay(String(tenant.rentDueDay ?? 5));
     setStatus(tenant.admissionStatus ?? 'Active');
+    setDocuments([]);
+    setPreviewDocument(undefined);
     setFormError(undefined);
   }, [tenant?.id]);
+
+  const pickDocument = async (type: TenantDocumentType) => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: ['image/*', 'application/pdf'],
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setDocuments((current) => [
+      ...current.filter((document) => document.type !== type),
+      {
+        type,
+        uri: asset.uri,
+        name: asset.name || `${type}.file`,
+        mimeType: asset.mimeType,
+      },
+    ]);
+  };
 
   const handleSubmit = async () => {
     if (!tenant?.id) return;
@@ -917,6 +942,7 @@ function EditTenantModal({
         foodIncluded,
         rentDueDay: Number(rentDueDay || 5),
         status,
+        documents,
       });
       onClose();
     } catch (error) {
@@ -990,11 +1016,35 @@ function EditTenantModal({
                 ))}
               </View>
             </View>
+            <SectionTitle title="Documents" action="Tap to view or replace" />
+            <View style={styles.documentGrid}>
+              {tenantDocumentTypes.map((type) => {
+                const existingDocument = (tenant?.documents ?? []).find((item) => item.type === documentTypeLabel(type));
+                const replacement = documents.find((item) => item.type === type);
+                return (
+                  <View key={type} style={styles.documentButton}>
+                    <TouchableOpacity style={styles.flex} onPress={() => existingDocument ? setPreviewDocument(existingDocument) : pickDocument(type)}>
+                      <View style={styles.inlineDocumentRow}>
+                        <AppIcon name={existingDocument || replacement ? 'check-circle-outline' : 'upload-outline'} size={18} color={existingDocument || replacement ? colors.green : colors.muted} />
+                        <View style={styles.flex}>
+                          <Text style={styles.documentTitle}>{type}</Text>
+                          <Text style={styles.activityCaption}>{replacement?.name ?? existingDocument?.fileName ?? 'Tap to upload'}</Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.replaceDocButton} onPress={() => pickDocument(type)}>
+                      <Text style={styles.replaceDocText}>{existingDocument ? 'Replace' : 'Upload'}</Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </View>
             {formError ? <Text style={styles.authError}>{formError}</Text> : null}
             <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit} disabled={saving}><Text style={styles.primaryButtonText}>{saving ? 'Saving...' : 'Save changes'}</Text></TouchableOpacity>
           </ScrollView>
         </View>
       </View>
+      <DocumentViewerModal document={previewDocument} onClose={() => setPreviewDocument(undefined)} />
     </Modal>
   );
 }
@@ -1091,11 +1141,11 @@ function TenantDetail({
   const [vacateOpen, setVacateOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [previewPhoto, setPreviewPhoto] = useState<string | undefined>();
+  const [previewDocument, setPreviewDocument] = useState<TenantDocument | undefined>();
   const [message, setMessage] = useState<string | undefined>();
   const tenantBills = (data.rentBills ?? []).filter((bill) => bill.tenantId === tenant.id);
   const currentBill = tenantBills[0];
   const pendingRent = currentBill?.pendingAmount ?? (tenant.status === 'Paid' ? 0 : tenant.rent);
-  const missingDocs = tenantDocumentTypes.filter((type) => !(tenant.documents ?? []).some((document) => document.type === documentTypeLabel(type)));
 
   const openWhatsApp = (template: 'rent' | 'pending' | 'paid') => {
     const amount = template === 'paid' ? (currentBill?.paidAmount ?? tenant.rent) : pendingRent;
@@ -1165,8 +1215,8 @@ function TenantDetail({
           <Text style={styles.rentHeroValue}>{money(currentBill?.amount ?? tenant.rent)}</Text>
           <View style={styles.rentHeroBottom}><Text style={styles.rentHeroCaption}>Paid {money(currentBill?.paidAmount ?? 0)}</Text><Text style={styles.rentHeroPending}>Pending {money(pendingRent)}</Text></View>
           <View style={styles.detailButtonRow}>
-            {currentBill ? <TouchableOpacity style={styles.secondaryButton} onPress={() => setPaymentOpen(true)}><Text style={styles.secondaryButtonText}>Add payment</Text></TouchableOpacity> : <TouchableOpacity style={styles.secondaryButton} onPress={handleGenerateRent}><Text style={styles.secondaryButtonText}>Generate rent bill</Text></TouchableOpacity>}
-            <TouchableOpacity style={styles.secondaryButton} onPress={() => openWhatsApp('pending')}><Text style={styles.secondaryButtonText}>Reminder</Text></TouchableOpacity>
+            {currentBill ? <TouchableOpacity style={[styles.secondaryButton, styles.rentHeroActionButton]} onPress={() => setPaymentOpen(true)}><Text style={styles.rentHeroActionText}>Add payment</Text></TouchableOpacity> : <TouchableOpacity style={[styles.secondaryButton, styles.rentHeroActionButton]} onPress={handleGenerateRent}><Text style={styles.rentHeroActionText}>Generate rent bill</Text></TouchableOpacity>}
+            <TouchableOpacity style={[styles.secondaryButton, styles.rentHeroActionButton]} onPress={() => openWhatsApp('pending')}><Text style={styles.rentHeroActionText}>Reminder</Text></TouchableOpacity>
           </View>
           {message ? <Text style={styles.inviteMessage}>{message}</Text> : null}
         </View>
@@ -1187,14 +1237,14 @@ function TenantDetail({
           {tenantDocumentTypes.map((type) => {
             const document = (tenant.documents ?? []).find((item) => item.type === documentTypeLabel(type));
             return (
-              <View key={type} style={styles.documentButton}>
+              <TouchableOpacity key={type} style={styles.documentButton} onPress={() => document ? setPreviewDocument(document) : undefined} disabled={!document}>
                 <AppIcon name={document ? 'check-circle-outline' : 'alert-circle-outline'} size={18} color={document ? colors.green : colors.orange} />
                 <View style={styles.flex}><Text style={styles.documentTitle}>{type}</Text><Text style={styles.activityCaption}>{document?.fileName ?? `${type} missing`}</Text></View>
-              </View>
+                {document ? <AppIcon name="eye-outline" size={18} color={colors.green} /> : null}
+              </TouchableOpacity>
             );
           })}
         </View>
-        {missingDocs.length ? <Text style={styles.authError}>{missingDocs.join(', ')} missing</Text> : null}
 
         <SectionTitle title="Activity timeline" />
         <View style={styles.listCard}>
@@ -1207,28 +1257,35 @@ function TenantDetail({
       <VacateTenantModal tenant={tenant} visible={vacateOpen} onClose={() => setVacateOpen(false)} onSubmit={onVacateTenant} pendingRent={pendingRent} />
       <PaymentModal visible={paymentOpen} bill={currentBill} onClose={() => setPaymentOpen(false)} onSubmit={onRecordPayment} />
       <ImagePreviewModal uri={previewPhoto} onClose={() => setPreviewPhoto(undefined)} />
+      <DocumentViewerModal document={previewDocument} onClose={() => setPreviewDocument(undefined)} />
     </>
   );
 }
 
 function receiptHtml(data: PgMasterData, bill: RentBill, receipt: RentReceipt) {
+  const escapeHtml = (value: string | undefined) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
   return `
     <html>
       <body style="font-family: Arial, sans-serif; padding: 32px; color: #17231F;">
         <h1 style="margin-bottom: 4px;">PGCopilot Rent Receipt</h1>
-        <p style="color: #75827D;">${data.propertyName}</p>
+        <p style="color: #75827D;">${escapeHtml(data.propertyName)}</p>
         <hr />
-        <h2>Receipt ${receipt.receiptNumber}</h2>
-        <p><strong>Tenant:</strong> ${bill.tenantName}</p>
-        <p><strong>Room / Bed:</strong> ${bill.room}</p>
-        <p><strong>Rent Month:</strong> ${bill.rentMonth}</p>
+        <h2>Receipt ${escapeHtml(receipt.receiptNumber)}</h2>
+        <p><strong>Tenant:</strong> ${escapeHtml(bill.tenantName)}</p>
+        <p><strong>Room / Bed:</strong> ${escapeHtml(bill.room)}</p>
+        <p><strong>Rent Month:</strong> ${escapeHtml(bill.rentMonth)}</p>
         <p><strong>Payment Date:</strong> ${new Date(receipt.paymentDate).toLocaleString('en-IN')}</p>
         <p><strong>Amount:</strong> ${money(receipt.amount)}</p>
-        <p><strong>Payment Mode:</strong> ${receipt.paymentMode}</p>
+        <p><strong>Payment Mode:</strong> ${escapeHtml(receipt.paymentMode)}</p>
         <p><strong>Bill Amount:</strong> ${money(bill.amount)}</p>
         <p><strong>Total Paid:</strong> ${money(bill.paidAmount)}</p>
         <p><strong>Pending:</strong> ${money(bill.pendingAmount)}</p>
-        ${receipt.notes ? `<p><strong>Notes:</strong> ${receipt.notes}</p>` : ''}
+        ${receipt.notes ? `<p><strong>Notes:</strong> ${escapeHtml(receipt.notes)}</p>` : ''}
         <hr />
         <p style="font-size: 12px; color: #75827D;">Generated by PGCopilot</p>
       </body>
@@ -1237,11 +1294,20 @@ function receiptHtml(data: PgMasterData, bill: RentBill, receipt: RentReceipt) {
 }
 
 async function downloadReceiptPdf(data: PgMasterData, bill: RentBill, receipt: RentReceipt) {
-  const printed = await Print.printToFileAsync({ html: receiptHtml(data, bill, receipt) });
+  const html = receiptHtml(data, bill, receipt);
   if (Platform.OS === 'web') {
-    window.open(printed.uri, '_blank');
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = globalThis.document.createElement('a');
+    link.href = url;
+    link.download = `${receipt.receiptNumber}.html`;
+    globalThis.document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
     return;
   }
+  const printed = await Print.printToFileAsync({ html });
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(printed.uri, { mimeType: 'application/pdf', dialogTitle: receipt.receiptNumber });
   }
@@ -1668,6 +1734,52 @@ function Login({
   );
 }
 
+function isImageDocument(document?: TenantDocument) {
+  return Boolean(document?.mimeType?.startsWith('image/') || document?.fileName.match(/\.(png|jpe?g|webp|gif)$/i));
+}
+
+function isPdfDocument(document?: TenantDocument) {
+  return Boolean(document?.mimeType === 'application/pdf' || document?.fileName.match(/\.pdf$/i));
+}
+
+function DocumentViewerModal({ document, onClose }: { document?: TenantDocument; onClose: () => void }) {
+  const uri = document?.fileUrl;
+  const canPreviewImage = Boolean(uri && isImageDocument(document));
+  const canPreviewPdfOnWeb = Boolean(uri && isPdfDocument(document) && Platform.OS === 'web');
+  const openDocument = () => {
+    if (uri) Linking.openURL(uri);
+  };
+
+  return (
+    <Modal visible={Boolean(document)} animationType="fade" transparent>
+      <View style={styles.imagePreviewBackdrop}>
+        <View style={styles.imagePreviewCard}>
+          <TouchableOpacity style={styles.imagePreviewClose} onPress={onClose}><AppIcon name="close" size={22} color={colors.ink} /></TouchableOpacity>
+          <Text style={styles.modalTitle}>{document?.type ?? 'Document'}</Text>
+          <Text style={[styles.activityCaption, styles.documentViewerCaption]}>{document?.fileName ?? 'No file selected'}</Text>
+          {canPreviewImage ? (
+            <Image source={{ uri }} style={styles.imagePreview} resizeMode="contain" />
+          ) : canPreviewPdfOnWeb ? (
+            React.createElement('iframe' as any, {
+              src: uri,
+              style: { width: '100%', height: 420, border: '0', borderRadius: 13, backgroundColor: colors.bg },
+              title: document?.fileName ?? 'Document preview',
+            })
+          ) : (
+            <View style={styles.documentFallbackPreview}>
+              <AppIcon name={isPdfDocument(document) ? 'file-pdf-box' : 'file-document-outline'} size={54} color={colors.green} />
+              <Text style={styles.documentFallbackText}>{uri ? 'Preview opens in your browser or document app.' : 'Document URL is not available yet.'}</Text>
+            </View>
+          )}
+          <TouchableOpacity style={styles.primaryButton} onPress={openDocument} disabled={!uri}>
+            <Text style={styles.primaryButtonText}>{Platform.OS === 'web' ? 'Open / download' : 'Open document'}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function HostelSetup({
   onCreate,
   onLogout,
@@ -2015,6 +2127,9 @@ const styles = StyleSheet.create({
   imagePreviewCard: { width: '100%', maxWidth: 430, backgroundColor: colors.card, borderRadius: 18, padding: 14 },
   imagePreviewClose: { alignSelf: 'flex-end', width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, marginBottom: 10 },
   imagePreview: { width: '100%', height: 360, borderRadius: 13, backgroundColor: colors.bg },
+  documentViewerCaption: { marginTop: 4, marginBottom: 12 },
+  documentFallbackPreview: { height: 260, borderRadius: 13, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', padding: 22, gap: 12 },
+  documentFallbackText: { color: colors.muted, textAlign: 'center', lineHeight: 19 },
   tenantName: { color: colors.ink, fontWeight: '700', fontSize: 13 },
   backLink: { flexDirection: 'row', alignItems: 'center', gap: 5, alignSelf: 'flex-start', marginBottom: 14 },
   backText: { color: colors.green, fontWeight: '800', fontSize: 12 },
@@ -2051,6 +2166,8 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
   secondaryButton: { height: 44, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderWidth: 1, borderColor: colors.line },
   secondaryButtonText: { color: colors.ink, fontWeight: '800', fontSize: 13 },
+  rentHeroActionButton: { minWidth: 116, paddingHorizontal: 14, borderColor: '#D9E5DF', backgroundColor: '#FFFFFF' },
+  rentHeroActionText: { color: colors.ink, fontWeight: '900', fontSize: 13 },
   toggleRow: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   segmentRow: { flexDirection: 'row', gap: 7 },
   segmentChip: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: 16, backgroundColor: '#EDF0EE' },
@@ -2059,6 +2176,9 @@ const styles = StyleSheet.create({
   segmentTextActive: { color: '#FFF' },
   documentGrid: { gap: 8, marginBottom: 8 },
   documentButton: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 10, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  inlineDocumentRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  replaceDocButton: { borderWidth: 1, borderColor: colors.green, borderRadius: 9, paddingHorizontal: 10, paddingVertical: 7 },
+  replaceDocText: { color: colors.green, fontSize: 11, fontWeight: '800' },
   documentTitle: { color: colors.ink, fontSize: 12, fontWeight: '800' },
   rentHero: { backgroundColor: colors.ink, padding: 18, borderRadius: 16, marginBottom: 15 },
   rentHeroValue: { color: '#FFF', fontSize: 29, fontWeight: '800', marginTop: 8 },

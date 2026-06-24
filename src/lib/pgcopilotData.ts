@@ -149,6 +149,7 @@ export type RecordRentPaymentInput = {
 
 export type UpdateTenantInput = Omit<NewTenantInput, 'documents'> & {
   id: string;
+  documents?: TenantDocumentInput[];
 };
 
 export type VacateTenantInput = {
@@ -301,7 +302,7 @@ function slugFileName(name: string) {
     || `document-${Date.now()}`;
 }
 
-async function uploadTenantDocuments(input: NewTenantInput, tenantId: string, currentData: PgMasterData, userId?: string) {
+async function uploadTenantDocuments(input: Pick<NewTenantInput, 'documents'>, tenantId: string, currentData: PgMasterData, userId?: string) {
   if (!supabase || !currentData.hostelId || input.documents.length === 0) return;
 
   for (const document of input.documents) {
@@ -318,6 +319,13 @@ async function uploadTenantDocuments(input: NewTenantInput, tenantId: string, cu
 
     if (uploadResult.error) throw new Error(uploadResult.error.message);
 
+    const dbDocumentType = documentTypeForDb(document.type);
+    await supabase
+      .from('tenant_documents')
+      .delete()
+      .eq('tenant_id', tenantId)
+      .eq('document_type', dbDocumentType);
+
     const { error } = await supabase.from('tenant_documents').insert({
       hostel_id: currentData.hostelId,
       owner_id: currentData.ownerId,
@@ -325,7 +333,7 @@ async function uploadTenantDocuments(input: NewTenantInput, tenantId: string, cu
       tenant_id: tenantId,
       bucket_id: 'tenant-documents',
       storage_path: storagePath,
-      document_type: documentTypeForDb(document.type),
+      document_type: dbDocumentType,
       file_name: document.name,
       mime_type: document.mimeType || null,
     });
@@ -461,15 +469,14 @@ export async function loadPgMasterData(selectedHostelId?: string): Promise<LoadP
       storagePath: document.storage_path,
       mimeType: document.mime_type,
     }));
-    const photoDocument = documents.find((document) => document.type === 'Photo' && document.storagePath);
-    let photoUrl: string | undefined;
-    if (photoDocument?.storagePath) {
-      const { data: signedPhoto } = await supabase!.storage
+    documents = await Promise.all(documents.map(async (document) => {
+      if (!document.storagePath) return document;
+      const { data: signedDocument } = await supabase!.storage
         .from('tenant-documents')
-        .createSignedUrl(photoDocument.storagePath, 60 * 60);
-      photoUrl = signedPhoto?.signedUrl;
-      documents = documents.map((document) => document.id === photoDocument.id ? { ...document, fileUrl: photoUrl } : document);
-    }
+        .createSignedUrl(document.storagePath, 60 * 60);
+      return { ...document, fileUrl: signedDocument?.signedUrl };
+    }));
+    const photoUrl = documents.find((document) => document.type === 'Photo' && document.fileUrl)?.fileUrl;
     return {
       id: tenant.id,
       initials: initialsFor(tenant.full_name),
@@ -756,6 +763,10 @@ export async function updateTenant(input: UpdateTenantInput, currentData: PgMast
     .eq('hostel_id', currentData.hostelId);
 
   if (error) throw new Error(error.message);
+  if (input.documents?.length) {
+    const userId = await currentUserId();
+    await uploadTenantDocuments({ documents: input.documents }, input.id, currentData, userId);
+  }
   const refreshed = await loadPgMasterData(currentData.hostelId);
   return refreshed.data;
 }
