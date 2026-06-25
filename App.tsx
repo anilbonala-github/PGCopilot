@@ -2705,6 +2705,12 @@ function AICopilot({
     { label: 'Food Today', value: money(todayFoodCost), icon: 'silverware-fork-knife' as IconName, tone: todayFoodCost ? 'orange' as Tone : 'green' as Tone },
     { label: 'Net Profit', value: money(summary.profit), icon: 'chart-line' as IconName, tone: summary.profit >= 0 ? 'green' as Tone : 'red' as Tone },
   ];
+  const priorityCards = [
+    { label: `Collect rent from ${pendingRows.length} tenants`, icon: 'account-cash-outline' as IconName, tone: pendingRows.length ? 'red' as Tone : 'green' as Tone },
+    { label: `${vacantBeds.length} beds vacant`, icon: 'bed-empty' as IconName, tone: vacantBeds.length ? 'orange' as Tone : 'green' as Tone },
+    { label: health.warnings.find((item) => item.toLowerCase().includes('maintenance')) ?? 'No maintenance backlog', icon: 'hammer-wrench' as IconName, tone: health.warnings.some((item) => item.toLowerCase().includes('maintenance')) ? 'orange' as Tone : 'green' as Tone },
+    { label: `${getThisMonthAdmissions(data).length} new admissions this month`, icon: 'account-plus-outline' as IconName, tone: 'blue' as Tone },
+  ];
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<AiAnswer>(() => buildLocalAiAnswer("Show this month's profit.", data));
   const [pendingCommand, setPendingCommand] = useState<AiCommand | undefined>();
@@ -2766,47 +2772,77 @@ function AICopilot({
 
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-      <View style={styles.aiHero}>
-        <View style={styles.aiHeroTop}>
-          <View style={styles.aiOrb}><AppIcon name="robot-outline" size={30} color="#FFF" /></View>
-          <View style={styles.aiHealthRing}>
-            <Text style={styles.aiHealthScore}>{health.score}</Text>
-            <Text style={styles.aiHealthMax}>/100</Text>
+      <View style={styles.aiTopBar}>
+        <View style={styles.aiBrandIcon}><AppIcon name="robot-outline" size={28} color="#FFF" /></View>
+        <View style={styles.flex}>
+          <Text style={styles.aiTopTitle}>AI Copilot</Text>
+          <Text style={styles.aiTopSubtitle}>Your smart hostel manager</Text>
+        </View>
+        <TouchableOpacity style={styles.aiBellButton}>
+          <AppIcon name="bell-outline" size={21} color={colors.ink} />
+          {pendingRows.length ? <View style={styles.aiBadge}><Text style={styles.aiBadgeText}>{Math.min(9, pendingRows.length)}</Text></View> : null}
+        </TouchableOpacity>
+        <View style={styles.aiOwnerAvatar}><Text style={styles.aiOwnerInitial}>A</Text></View>
+      </View>
+
+      <View style={styles.aiOverviewCard}>
+        <View style={styles.aiOverviewHeader}>
+          <View style={styles.flex}>
+            <Text style={styles.aiGreeting}>Good morning, Anil</Text>
+            <Text style={styles.aiOverviewText}>Here's your business overview for today.</Text>
+          </View>
+          <View style={styles.aiHealthPill}>
+            <View style={[styles.aiSummaryIcon, { backgroundColor: toneBackground(health.tone) }]}>
+              <AppIcon name="shield-check-outline" size={17} color={colors[health.tone]} />
+            </View>
+            <View>
+              <Text style={styles.aiHealthLabel}>Business Health</Text>
+              <View style={styles.aiHealthInline}><Text style={[styles.aiHealthInlineScore, { color: colors[health.tone] }]}>{health.score}</Text><Text style={styles.aiHealthInlineMax}>/100</Text></View>
+              <Text style={[styles.aiHealthStatus, { color: colors[health.tone] }]}>{health.label}</Text>
+            </View>
           </View>
         </View>
-        <Text style={styles.aiHeroTitle}>Business Health: {health.label}</Text>
-        <Text style={styles.aiHeroText}>{health.recommendation}</Text>
-      </View>
 
-      <SectionTitle title="Today's business summary" />
-      <View style={styles.aiSummaryGrid}>
-        {summaryTiles.map((item) => (
-          <View key={item.label} style={styles.aiSummaryTile}>
-            <View style={[styles.aiSummaryIcon, { backgroundColor: toneBackground(item.tone) }]}>
-              <AppIcon name={item.icon} size={16} color={colors[item.tone]} />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiSummaryScroller}>
+          {summaryTiles.slice(0, 5).map((item) => (
+            <View key={item.label} style={styles.aiSummaryTileWide}>
+              <View style={[styles.aiSummaryIcon, { backgroundColor: toneBackground(item.tone) }]}>
+                <AppIcon name={item.icon} size={16} color={colors[item.tone]} />
+              </View>
+              <Text style={styles.aiSummaryLabelTop}>{item.label}</Text>
+              <Text style={styles.aiSummaryValueLarge}>{item.value}</Text>
+              <Text style={styles.aiSummaryLabel}>{item.label === 'Occupancy' ? `${summary.occupiedBeds} / ${summary.totalBeds} beds` : item.label === 'Pending Rent' ? `${pendingRows.length} tenants` : item.label === 'Vacant Beds' ? `${vacantBeds.length ? 'Needs filling' : 'Full'}` : item.label === 'Cash Today' ? 'Collected today' : 'Today'}</Text>
             </View>
-            <Text style={styles.aiSummaryValue}>{item.value}</Text>
-            <Text style={styles.aiSummaryLabel}>{item.label}</Text>
-          </View>
-        ))}
+          ))}
+        </ScrollView>
+
+        <View style={styles.aiPriorityHeader}>
+          <Text style={styles.sectionTitle}>Today's Priorities</Text>
+          <TouchableOpacity onPress={() => submitQuestion("Today's work")}><Text style={styles.sectionAction}>View all tasks</Text></TouchableOpacity>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiPriorityScroller}>
+          {priorityCards.map((item) => (
+            <TouchableOpacity key={item.label} style={styles.aiPriorityCard} onPress={() => submitQuestion(item.label)}>
+              <View style={[styles.aiSummaryIcon, { backgroundColor: toneBackground(item.tone) }]}>
+                <AppIcon name={item.icon} size={16} color={colors[item.tone]} />
+              </View>
+              <Text style={styles.aiPriorityText}>{item.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
 
-      <SectionTitle title="Recommended actions" />
-      <View style={styles.aiActionPanel}>
-        {[...health.warnings, health.recommendation].slice(0, 4).map((item, index) => (
-          <View key={`${item}-${index}`} style={styles.aiActionRow}>
-            <AppIcon name={index === 0 && pendingRows.length ? 'message-text-outline' : 'lightbulb-on-outline'} size={18} color={colors.orange} />
-            <Text style={styles.aiActionText}>{item}</Text>
-          </View>
-        ))}
-      </View>
-
-      <View style={styles.aiAskCard}>
-        <Text style={styles.fieldLabel}>ASK PGCOPILOT</Text>
-        <View style={styles.aiInputRow}>
+      <View style={styles.aiAskPanel}>
+        <View style={styles.aiAskHeader}>
+          <Text style={styles.aiAskTitle}>What would you like to do today?</Text>
+          <TouchableOpacity style={styles.aiVoiceButton} onPress={() => submitQuestion("Today's work")}>
+            <AppIcon name="microphone-outline" size={24} color="#FFF" />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.aiInputRowLarge}>
           <TextInput
             style={styles.aiInput}
-            placeholder="Example: Who has not paid rent?"
+            placeholder="Ask PGCopilot anything..."
             value={question}
             onChangeText={setQuestion}
             returnKeyType="send"
@@ -2816,95 +2852,126 @@ function AICopilot({
             <AppIcon name={loading ? 'timer-sand' : 'send'} size={18} color="#FFF" />
           </TouchableOpacity>
         </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiSuggestionScrollerContent}>
+          {suggestions.slice(1, 7).map((item) => (
+            <TouchableOpacity key={item} style={styles.aiPromptCard} onPress={() => submitQuestion(item)}>
+              <View style={[styles.aiPromptIcon, { backgroundColor: colors.paleGreen }]}>
+                <AppIcon name={item.includes('bed') ? 'bed-empty' : item.includes('profit') ? 'chart-bar' : item.includes('Food') ? 'silverware-fork-knife' : item.includes('report') ? 'calendar-text-outline' : 'cash-multiple'} size={15} color={colors.green} />
+              </View>
+              <Text style={styles.aiPromptText}>{item}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
 
-      <SectionTitle title="Suggested questions" />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.aiSuggestionScroller}>
-        {suggestions.map((item) => (
-          <TouchableOpacity key={item} style={styles.aiSuggestionChip} onPress={() => submitQuestion(item)}>
-            <Text style={styles.aiSuggestionText}>{item}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+      <View style={styles.aiChatHistory}>
+        <View style={styles.aiUserBubble}>
+          <Text style={styles.aiUserBubbleText}>{question || 'Who has not paid rent?'}</Text>
+          <Text style={styles.aiBubbleTime}>09:30 AM</Text>
+          <AppIcon name="check-all" size={15} color={colors.green} />
+        </View>
+        <View style={styles.aiAssistantLabel}>
+          <View style={styles.aiAssistantIcon}><AppIcon name="robot-outline" size={16} color="#FFF" /></View>
+          <Text style={styles.aiAssistantName}>PGCopilot AI</Text>
+        </View>
 
-      {pendingCommand ? (
-        <View style={styles.aiCommandCard}>
+        {pendingCommand ? (
+          <View style={styles.aiCommandCard}>
+            <View style={styles.aiAnswerHeader}>
+              <View>
+                <Text style={styles.cardEyebrow}>COMMAND MODE</Text>
+                <Text style={styles.aiAnswerTitle}>{pendingCommand.title}</Text>
+              </View>
+              <Chip label={pendingCommand.disabledReason ? 'Needs review' : 'Ready'} tone={pendingCommand.disabledReason ? 'orange' : 'green'} />
+            </View>
+            <Text style={styles.aiAnswerText}>{pendingCommand.summary}</Text>
+            {pendingCommand.disabledReason ? <Text style={styles.authError}>{pendingCommand.disabledReason}</Text> : null}
+            <View style={styles.commandButtonRow}>
+              <TouchableOpacity style={[styles.primaryButton, styles.commandButton]} onPress={confirmCommand} disabled={loading || Boolean(pendingCommand.disabledReason)}>
+                <Text style={styles.primaryButtonText}>{loading ? 'Working...' : 'Confirm and save'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.secondaryButton, styles.commandButton]} onPress={() => setPendingCommand(undefined)}>
+                <Text style={styles.secondaryButtonText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
+        {commandMessage ? <Text style={styles.inviteMessage}>{commandMessage}</Text> : null}
+
+        <View style={styles.aiAnswerCard}>
           <View style={styles.aiAnswerHeader}>
             <View>
-              <Text style={styles.cardEyebrow}>COMMAND MODE</Text>
-              <Text style={styles.aiAnswerTitle}>{pendingCommand.title}</Text>
+              <Text style={styles.cardEyebrow}>{answer.source === 'gemini' ? 'GEMINI ASSISTED' : 'PGCOPILOT AI'}</Text>
+              <Text style={styles.aiAnswerTitle}>{answer.title}</Text>
             </View>
-            <Chip label={pendingCommand.disabledReason ? 'Needs review' : 'Ready'} tone={pendingCommand.disabledReason ? 'orange' : 'green'} />
-          </View>
-          <Text style={styles.aiAnswerText}>{pendingCommand.summary}</Text>
-          {pendingCommand.disabledReason ? <Text style={styles.authError}>{pendingCommand.disabledReason}</Text> : null}
-          <View style={styles.commandButtonRow}>
-            <TouchableOpacity style={[styles.primaryButton, styles.commandButton]} onPress={confirmCommand} disabled={loading || Boolean(pendingCommand.disabledReason)}>
-              <Text style={styles.primaryButtonText}>{loading ? 'Working...' : 'Confirm and save'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.secondaryButton, styles.commandButton]} onPress={() => setPendingCommand(undefined)}>
-              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            <TouchableOpacity style={styles.aiDetailsButton} onPress={() => answer.type === 'pending_rent' ? onNavigate('Rent') : undefined}>
+              <Text style={styles.aiDetailsText}>View details</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      ) : null}
-      {commandMessage ? <Text style={styles.inviteMessage}>{commandMessage}</Text> : null}
-
-      <View style={styles.aiAnswerCard}>
-        <View style={styles.aiAnswerHeader}>
-          <View>
-            <Text style={styles.cardEyebrow}>{answer.source === 'gemini' ? 'GEMINI ASSISTED' : 'SMART DATA ANSWER'}</Text>
-            <Text style={styles.aiAnswerTitle}>{answer.title}</Text>
-          </View>
-          <Chip label={answer.source === 'gemini' ? 'AI' : 'Local'} tone={answer.source === 'gemini' ? 'purple' : 'green'} />
-        </View>
-        <Text style={styles.aiSectionLabel}>Answer</Text>
-        <Text style={styles.aiAnswerText}>{answer.answer}</Text>
-        {answer.metrics?.length ? (
-          <View style={styles.aiMetricRow}>
-            {answer.metrics.map((item) => (
-              <View key={item.label} style={styles.aiMetricCard}>
-                <Text style={styles.smallMuted}>{item.label}</Text>
-                <Text style={[styles.aiMetricValue, { color: colors[item.tone] }]}>{item.value}</Text>
-              </View>
+          <Text style={styles.aiAnswerText}>{answer.answer}</Text>
+          {answer.metrics?.length ? (
+            <View style={styles.aiMetricRow}>
+              {answer.metrics.map((item) => (
+                <View key={item.label} style={styles.aiMetricCard}>
+                  <Text style={styles.smallMuted}>{item.label}</Text>
+                  <Text style={[styles.aiMetricValue, { color: colors[item.tone] }]}>{item.value}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {answer.type === 'pending_rent' && pendingRows.length ? (
+            <View style={styles.aiTable}>
+              <View style={styles.aiTableHeader}><Text style={styles.aiTableHeadTenant}>Tenant</Text><Text style={styles.aiTableHead}>Room</Text><Text style={styles.aiTableHead}>Pending</Text></View>
+              {pendingRows.slice(0, 4).map((item) => (
+                <View key={`${item.tenantName}-${item.room}`} style={styles.aiTableRow}>
+                  <View style={styles.aiTableTenant}><TenantAvatar name={item.tenantName} initials={initialsForName(item.tenantName)} /><Text style={styles.tenantName}>{item.tenantName}</Text></View>
+                  <Text style={styles.aiTableCell}>{item.room}</Text>
+                  <Text style={[styles.aiTableCell, { color: colors.red }]}>{money(item.pendingAmount)}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          {answer.bullets.length && answer.type !== 'pending_rent' ? (
+            <View style={styles.aiBulletList}>
+              {answer.bullets.map((item) => (
+                <View key={item} style={styles.aiBulletRow}>
+                  <View style={styles.aiBulletDot} />
+                  <Text style={styles.aiBulletText}>{item}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          <View style={styles.aiSmartGrid}>
+            {(answer.actions ?? []).map((item, index) => (
+              <TouchableOpacity
+                key={item}
+                style={styles.aiSmartAction}
+                onPress={() => {
+                  if (item.toLowerCase().includes('rent')) onNavigate('Rent');
+                  else if (item.toLowerCase().includes('report')) onNavigate('More');
+                  else if (item.toLowerCase().includes('tenant') || item.toLowerCase().includes('document')) onNavigate('Tenants');
+                }}
+              >
+                <View style={[styles.aiSummaryIcon, { backgroundColor: index === 0 ? colors.paleGreen : colors.paleBlue }]}>
+                  <AppIcon name={index === 0 ? 'whatsapp' : index === 1 ? 'phone-outline' : index === 2 ? 'cash-plus' : 'format-list-bulleted'} size={16} color={index === 0 ? colors.green : colors.blue} />
+                </View>
+                <Text style={styles.aiActionText}>{item}</Text>
+              </TouchableOpacity>
             ))}
           </View>
-        ) : null}
-        <Text style={styles.aiSectionLabel}>Business insight</Text>
-        <Text style={styles.aiAnswerText}>{answer.insight ?? health.recommendation}</Text>
-        {answer.bullets.length ? (
-          <>
-          <Text style={styles.aiSectionLabel}>Details</Text>
-          <View style={styles.aiBulletList}>
-            {answer.bullets.map((item) => (
-              <View key={item} style={styles.aiBulletRow}>
-                <View style={styles.aiBulletDot} />
-                <Text style={styles.aiBulletText}>{item}</Text>
-              </View>
-            ))}
+          <View style={styles.aiInsightRecommendationRow}>
+            <View style={styles.aiInsightBox}><AppIcon name="lightbulb-on-outline" size={18} color={colors.orange} /><Text style={styles.aiInsightBoxText}>{answer.insight ?? health.recommendation}</Text></View>
+            <View style={styles.aiInsightBox}><AppIcon name="target" size={18} color={colors.red} /><Text style={styles.aiInsightBoxText}>{health.recommendation}</Text></View>
           </View>
-          </>
-        ) : null}
+        </View>
       </View>
 
-      <SectionTitle title="Smart action cards" />
-      <View style={styles.aiSmartGrid}>
-        {(answer.actions ?? []).map((item, index, all) => (
-          <TouchableOpacity
-            key={item}
-            style={styles.aiSmartAction}
-            onPress={() => {
-              if (item.toLowerCase().includes('rent')) onNavigate('Rent');
-              else if (item.toLowerCase().includes('report')) onNavigate('More');
-              else if (item.toLowerCase().includes('tenant') || item.toLowerCase().includes('document')) onNavigate('Tenants');
-            }}
-          >
-            <View style={[styles.aiSummaryIcon, { backgroundColor: colors.paleOrange }]}>
-              <AppIcon name={index === 0 ? 'flash-outline' : 'lightbulb-on-outline'} size={16} color={colors.orange} />
-            </View>
-            <Text style={styles.aiActionText}>{item}</Text>
-          </TouchableOpacity>
-        ))}
+      <View style={styles.aiVoiceDock}>
+        <Text style={styles.aiVoiceDockText}>Tap to speak</Text>
+        <TouchableOpacity style={styles.aiVoiceDockButton} onPress={() => submitQuestion("Today's work")}>
+          <AppIcon name="microphone-outline" size={30} color="#FFF" />
+        </TouchableOpacity>
+        <Text style={styles.aiVoiceDockText}>English (US)</Text>
       </View>
     </ScrollView>
   );
@@ -3546,35 +3613,62 @@ const styles = StyleSheet.create({
   exportGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 24 },
   exportButton: { width: '48%', minHeight: 44, borderRadius: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 8 },
   exportButtonText: { color: colors.ink, fontSize: 11, fontWeight: '800' },
-  aiHero: { backgroundColor: colors.ink, borderRadius: 22, padding: 22, marginBottom: 14, overflow: 'hidden' },
-  aiHeroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 15 },
-  aiOrb: { width: 58, height: 58, borderRadius: 21, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', marginBottom: 15 },
-  aiHealthRing: { width: 82, height: 82, borderRadius: 41, borderWidth: 7, borderColor: '#39B98D', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.06)' },
-  aiHealthScore: { color: '#FFF', fontSize: 24, fontWeight: '900' },
-  aiHealthMax: { color: '#B9CAC4', fontSize: 10, fontWeight: '800', marginTop: -2 },
-  aiHeroTitle: { color: '#FFF', fontSize: 29, fontWeight: '900', letterSpacing: -0.8 },
-  aiHeroText: { color: '#B9CAC4', fontSize: 13, lineHeight: 19, marginTop: 8 },
-  aiSummaryGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 16 },
-  aiSummaryTile: { width: '48%', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 13, marginBottom: 10 },
+  aiTopBar: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
+  aiBrandIcon: { width: 54, height: 54, borderRadius: 18, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
+  aiTopTitle: { color: colors.ink, fontSize: 25, fontWeight: '900', letterSpacing: -0.6 },
+  aiTopSubtitle: { color: colors.muted, fontSize: 13, marginTop: 3 },
+  aiBellButton: { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line },
+  aiBadge: { position: 'absolute', right: 4, top: 2, minWidth: 17, height: 17, borderRadius: 9, backgroundColor: colors.red, alignItems: 'center', justifyContent: 'center' },
+  aiBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '900' },
+  aiOwnerAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.paleBlue, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.line },
+  aiOwnerInitial: { color: colors.blue, fontWeight: '900', fontSize: 17 },
+  aiOverviewCard: { backgroundColor: colors.card, borderRadius: 20, borderWidth: 1, borderColor: colors.line, padding: 15, marginBottom: 16 },
+  aiOverviewHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 14 },
+  aiGreeting: { color: colors.ink, fontSize: 20, fontWeight: '900', letterSpacing: -0.5 },
+  aiOverviewText: { color: colors.muted, fontSize: 13, marginTop: 5 },
+  aiHealthPill: { minWidth: 140, borderRadius: 15, backgroundColor: '#F6FCF9', borderWidth: 1, borderColor: '#D7EFE5', padding: 10, flexDirection: 'row', gap: 8 },
+  aiHealthLabel: { color: colors.ink, fontSize: 11, fontWeight: '800' },
+  aiHealthInline: { flexDirection: 'row', alignItems: 'flex-end', marginTop: 2 },
+  aiHealthInlineScore: { fontSize: 22, fontWeight: '900' },
+  aiHealthInlineMax: { color: colors.ink, fontWeight: '800', marginBottom: 3 },
+  aiHealthStatus: { fontSize: 11, fontWeight: '800', marginTop: 2 },
+  aiSummaryScroller: { gap: 9, paddingBottom: 4 },
+  aiSummaryTileWide: { width: 126, minHeight: 118, borderRadius: 15, backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, padding: 12 },
   aiSummaryIcon: { width: 31, height: 31, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 9 },
-  aiSummaryValue: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  aiSummaryLabelTop: { color: colors.ink, fontSize: 11, fontWeight: '800', minHeight: 27 },
+  aiSummaryValueLarge: { color: colors.ink, fontSize: 22, fontWeight: '900', marginTop: 8 },
   aiSummaryLabel: { color: colors.muted, fontSize: 10.5, fontWeight: '700', marginTop: 3 },
-  aiActionPanel: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12, marginBottom: 15 },
-  aiActionRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 7 },
+  aiPriorityHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, marginBottom: 10 },
+  aiPriorityScroller: { gap: 9, paddingBottom: 2 },
+  aiPriorityCard: { width: 156, minHeight: 66, backgroundColor: '#FFF', borderRadius: 14, borderWidth: 1, borderColor: colors.line, padding: 10, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  aiPriorityText: { flex: 1, color: colors.ink, fontSize: 11.5, lineHeight: 16, fontWeight: '800' },
   aiActionText: { flex: 1, color: colors.ink, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   aiCommandCard: { backgroundColor: '#FFF8EF', borderWidth: 1, borderColor: '#F3D5B5', borderRadius: 18, padding: 16, marginBottom: 15 },
   commandButtonRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
   commandButton: { flex: 1, marginTop: 0 },
-  aiAskCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 14, marginBottom: 12 },
-  aiInputRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8 },
+  aiAskPanel: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 20, padding: 15, marginBottom: 16 },
+  aiAskHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 13 },
+  aiAskTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  aiVoiceButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
+  aiInputRowLarge: { flexDirection: 'row', alignItems: 'center', gap: 9, minHeight: 51, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingLeft: 13, marginBottom: 13 },
   aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, outlineStyle: 'none' } as any,
   aiSendButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
-  aiSuggestionScroller: { marginBottom: 15 },
-  aiSuggestionChip: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, paddingHorizontal: 13, paddingVertical: 9, marginRight: 8 },
-  aiSuggestionText: { color: colors.ink, fontSize: 11, fontWeight: '800' },
-  aiAnswerCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 18 },
+  aiSuggestionScrollerContent: { gap: 9 },
+  aiPromptCard: { width: 132, borderRadius: 14, borderWidth: 1, borderColor: colors.line, backgroundColor: '#FFF', padding: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  aiPromptIcon: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  aiPromptText: { flex: 1, color: colors.ink, fontSize: 10.5, fontWeight: '800', lineHeight: 14 },
+  aiChatHistory: { backgroundColor: '#FBFCFA', borderRadius: 20, borderWidth: 1, borderColor: colors.line, padding: 12, marginBottom: 16 },
+  aiUserBubble: { alignSelf: 'flex-end', maxWidth: '86%', backgroundColor: '#E6F7EC', borderRadius: 16, padding: 12, marginBottom: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  aiUserBubbleText: { color: colors.ink, fontSize: 13, fontWeight: '700' },
+  aiBubbleTime: { color: colors.muted, fontSize: 11 },
+  aiAssistantLabel: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 9 },
+  aiAssistantIcon: { width: 28, height: 28, borderRadius: 9, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
+  aiAssistantName: { color: colors.muted, fontSize: 12, fontWeight: '800' },
+  aiAnswerCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 12 },
   aiAnswerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
   aiAnswerTitle: { color: colors.ink, fontSize: 20, fontWeight: '900', marginTop: 4 },
+  aiDetailsButton: { borderWidth: 1, borderColor: '#BFE6D8', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 },
+  aiDetailsText: { color: colors.green, fontSize: 11, fontWeight: '900' },
   aiSectionLabel: { color: colors.green, fontSize: 10, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 },
   aiAnswerText: { color: colors.ink, fontSize: 13, lineHeight: 20 },
   aiMetricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
@@ -3584,8 +3678,21 @@ const styles = StyleSheet.create({
   aiBulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   aiBulletDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.green, marginTop: 6 },
   aiBulletText: { flex: 1, color: colors.muted, fontSize: 12, lineHeight: 17 },
-  aiSmartGrid: { gap: 9, marginBottom: 24 },
+  aiTable: { borderWidth: 1, borderColor: colors.line, borderRadius: 13, marginTop: 14, overflow: 'hidden' },
+  aiTableHeader: { flexDirection: 'row', backgroundColor: colors.bg, padding: 10 },
+  aiTableHeadTenant: { flex: 1.8, color: colors.muted, fontSize: 10, fontWeight: '900' },
+  aiTableHead: { flex: 1, color: colors.muted, fontSize: 10, fontWeight: '900', textAlign: 'right' },
+  aiTableRow: { flexDirection: 'row', alignItems: 'center', padding: 10, borderTopWidth: 1, borderTopColor: colors.line },
+  aiTableTenant: { flex: 1.8, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  aiTableCell: { flex: 1, textAlign: 'right', color: colors.ink, fontSize: 12, fontWeight: '800' },
+  aiSmartGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginTop: 14 },
   aiSmartAction: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 13, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  aiInsightRecommendationRow: { flexDirection: 'row', gap: 10, marginTop: 14 },
+  aiInsightBox: { flex: 1, backgroundColor: '#FFF8EF', borderWidth: 1, borderColor: '#F3E0C7', borderRadius: 14, padding: 12, gap: 7 },
+  aiInsightBoxText: { color: colors.ink, fontSize: 12, lineHeight: 18, fontWeight: '700' },
+  aiVoiceDock: { height: 72, borderRadius: 36, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, marginBottom: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingHorizontal: 12 },
+  aiVoiceDockButton: { width: 70, height: 70, borderRadius: 35, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', marginTop: -18 },
+  aiVoiceDockText: { color: colors.muted, fontSize: 13, fontWeight: '800' },
   bottomNav: { height: 68, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', width: '100%', maxWidth: 520, alignSelf: 'center' },
   navItem: { alignItems: 'center', minWidth: 48, gap: 4 },
   navText: { color: colors.muted, fontSize: 9, fontWeight: '700' },

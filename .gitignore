@@ -9,6 +9,9 @@ dist/
 dist-pgcopilot/
 web-build/
 
+# Supabase local CLI state
+supabase/.temp/
+
 # Native
 .kotlin/
 *.orig.*
