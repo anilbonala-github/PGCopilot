@@ -28,6 +28,9 @@ function detectIntent(question: string) {
   if (text.includes('profit') || text.includes('income') || text.includes('net')) return 'profit';
   if (text.includes('joined') || text.includes('admission') || text.includes('new tenant')) return 'new_admissions';
   if (text.includes('expense') || text.includes('food') || text.includes('electricity') || text.includes('cost')) return 'expense_analysis';
+  if (text.includes('document') || text.includes('aadhaar') || text.includes('agreement') || text.includes('photo')) return 'documents';
+  if (text.includes('today') || text.includes('work') || text.includes('task')) return 'daily_ops';
+  if (text.includes('report') || text.includes('export') || text.includes('pdf') || text.includes('excel')) return 'reports';
   return 'general';
 }
 

@@ -58,16 +58,26 @@ import {
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
 type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'AI' | 'More';
 type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
-type AiIntent = 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'general';
+type AiIntent = 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'general';
 
 type AiAnswer = {
   type: AiIntent;
   title: string;
   answer: string;
   bullets: string[];
+  insight?: string;
   metrics?: { label: string; value: string; tone: Tone }[];
   actions?: string[];
   source: 'local' | 'gemini';
+};
+
+type BusinessHealth = {
+  score: number;
+  label: string;
+  tone: Tone;
+  positives: string[];
+  warnings: string[];
+  recommendation: string;
 };
 
 const colors = {
@@ -2157,6 +2167,57 @@ function buildAiInsights(data: PgMasterData): { title: string; text: string; ico
   ];
 }
 
+function getMissingDocumentTenants(data: PgMasterData) {
+  return data.tenants.filter((tenant) => tenant.admissionStatus !== 'Vacated' && (tenant.documentCount ?? 0) < tenantDocumentTypes.length);
+}
+
+function buildBusinessHealth(data: PgMasterData): BusinessHealth {
+  const summary = buildSummary(data);
+  const pendingPercent = summary.expectedRent ? summary.pendingRent / summary.expectedRent : 0;
+  const profitMargin = summary.income ? summary.profit / summary.income : 0;
+  const missingDocs = getMissingDocumentTenants(data).length;
+  const maintenanceBeds = summary.maintenanceBeds;
+  const vacantBeds = getVacantBeds(data).length;
+
+  let score = 100;
+  score -= Math.max(0, 92 - summary.occupancyRate) * 0.75;
+  score -= Math.min(30, pendingPercent * 100);
+  if (profitMargin < 0.35) score -= Math.min(18, (0.35 - Math.max(profitMargin, 0)) * 50);
+  score -= Math.min(10, vacantBeds * 2);
+  score -= Math.min(10, maintenanceBeds * 3);
+  score -= Math.min(12, missingDocs * 1.5);
+  score = Math.max(0, Math.min(100, Math.round(score)));
+
+  const positives: string[] = [];
+  const warnings: string[] = [];
+  if (summary.occupancyRate >= 90) positives.push(`Occupancy is strong at ${summary.occupancyRate}%.`);
+  else warnings.push(`Occupancy is ${summary.occupancyRate}%; fill vacant beds to improve revenue.`);
+  if (summary.pendingRent <= 0) positives.push('No pending rent in generated bills.');
+  else warnings.push(`Pending rent is ${money(summary.pendingRent)} and needs follow-up.`);
+  if (summary.profit >= 0) positives.push(`Current profit is ${money(summary.profit)}.`);
+  else warnings.push(`Current loss is ${money(Math.abs(summary.profit))}.`);
+  if (maintenanceBeds) warnings.push(`${maintenanceBeds} beds are under maintenance.`);
+  if (missingDocs) warnings.push(`${missingDocs} active tenants have missing documents.`);
+
+  const projectedVacancyRecovery = vacantBeds * Math.round(summary.activeTenants ? summary.expectedRent / summary.activeTenants : 0);
+  const recommendation = summary.pendingRent > 0
+    ? `Recover ${money(summary.pendingRent)} pending rent first.`
+    : vacantBeds > 0
+      ? `Fill ${vacantBeds} vacant beds to increase projected monthly income by about ${money(projectedVacancyRecovery)}.`
+      : maintenanceBeds > 0
+        ? 'Clear maintenance beds so they can return to inventory.'
+        : 'Business looks healthy. Keep rent collection and document hygiene steady.';
+
+  return {
+    score,
+    label: score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Needs attention' : 'Critical',
+    tone: score >= 85 ? 'green' : score >= 70 ? 'blue' : score >= 50 ? 'orange' : 'red',
+    positives,
+    warnings,
+    recommendation,
+  };
+}
+
 function detectAiIntent(question: string): AiIntent {
   const text = question.toLowerCase();
   if (text.includes('not paid') || text.includes('pending rent') || text.includes('rent due') || text.includes('unpaid')) return 'pending_rent';
@@ -2166,6 +2227,9 @@ function detectAiIntent(question: string): AiIntent {
   if (text.includes('profit') || text.includes('income') || text.includes('net')) return 'profit';
   if (text.includes('joined') || text.includes('admission') || text.includes('new tenant')) return 'new_admissions';
   if (text.includes('expense') || text.includes('food') || text.includes('electricity') || text.includes('cost')) return 'expense_analysis';
+  if (text.includes('document') || text.includes('aadhaar') || text.includes('agreement') || text.includes('photo')) return 'documents';
+  if (text.includes('today') || text.includes('work') || text.includes('task')) return 'daily_ops';
+  if (text.includes('report') || text.includes('export') || text.includes('pdf') || text.includes('excel')) return 'reports';
   return 'general';
 }
 
@@ -2236,6 +2300,8 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
   const nextMonthVacates = getNextMonthVacates(data);
   const admissions = getThisMonthAdmissions(data);
   const topExpense = getTopExpenseCategory(data);
+  const missingDocs = getMissingDocumentTenants(data);
+  const health = buildBusinessHealth(data);
 
   if (intent === 'pending_rent') {
     const total = pendingRows.reduce((sum, item) => sum + item.pendingAmount, 0);
@@ -2243,6 +2309,7 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
       type: intent,
       title: 'Pending rent',
       answer: pendingRows.length ? `${pendingRows.length} tenants have pending rent. Total pending amount is ${money(total)}.` : 'No pending rent found for the current generated bills.',
+      insight: pendingRows.length ? `Pending rent is ${summary.expectedRent ? Math.round((total / summary.expectedRent) * 100) : 0}% of expected rent. This should be the first recovery action.` : 'Rent collection is healthy for current bills.',
       bullets: pendingRows.slice(0, 8).map((item) => `${item.tenantName} - ${money(item.pendingAmount)} pending, Room ${item.room}, Due ${item.dueDate}`),
       metrics: [
         { label: 'Pending tenants', value: String(pendingRows.length), tone: pendingRows.length ? 'red' : 'green' },
@@ -2258,6 +2325,7 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
       type: intent,
       title: 'Vacant beds',
       answer: vacantBeds.length ? `${vacantBeds.length} beds are vacant and available for admission.` : 'No vacant beds are available right now.',
+      insight: vacantBeds.length ? `Filling these beds can increase next month revenue. Use the admission flow before the next rent cycle.` : 'Occupancy is tight. Keep a waiting list ready for upcoming vacates.',
       bullets: vacantBeds.slice(0, 12).map((item) => `${item.bed} - Room ${item.room}, ${item.floor}`),
       metrics: [
         { label: 'Vacant beds', value: String(vacantBeds.length), tone: vacantBeds.length ? 'orange' : 'green' },
@@ -2273,6 +2341,7 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
       type: intent,
       title: 'Expected departures',
       answer: nextMonthVacates.length ? `${nextMonthVacates.length} tenants are marked to vacate next month.` : 'No tenants are marked as vacating next month.',
+      insight: nextMonthVacates.length ? 'Expected departures should be marketed early so vacancy does not affect next month rent.' : 'No upcoming departures are recorded for next month.',
       bullets: nextMonthVacates.map((tenant) => `${tenant.name} - Room ${tenant.room}, Vacate date ${tenant.vacateDate}`),
       metrics: [
         { label: 'Next month vacates', value: String(nextMonthVacates.length), tone: nextMonthVacates.length ? 'orange' : 'green' },
@@ -2287,6 +2356,7 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
       type: intent,
       title: "This month's profit",
       answer: `This month's net profit is ${money(summary.profit)}.`,
+      insight: `Profit margin is ${summary.income ? Math.round((summary.profit / summary.income) * 100) : 0}%. Pending rent and expenses are the main levers.`,
       bullets: [`Income: ${money(summary.income)}`, `Expenses: ${money(summary.expensesTotal)}`, `Net profit: ${money(summary.profit)}`],
       metrics: [
         { label: 'Income', value: money(summary.income), tone: 'green' },
@@ -2308,6 +2378,7 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
       type: intent,
       title: 'Profit decrease analysis',
       answer: 'I can explain the current profit pressure from available data. Month-over-month comparison will become sharper after more historical expense and rent records are available.',
+      insight: health.recommendation,
       bullets: riskBullets,
       metrics: [
         { label: 'Occupancy', value: `${summary.occupancyRate}%`, tone: summary.occupancyRate >= 90 ? 'green' : 'orange' },
@@ -2324,6 +2395,7 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
       type: intent,
       title: 'New admissions',
       answer: admissions.length ? `${admissions.length} tenants joined this month.` : 'No new admissions found for this month.',
+      insight: admissions.length ? 'Check document completion and rent bill generation for new joiners.' : 'No new admissions this month means growth depends on filling vacant beds.',
       bullets: admissions.map((tenant) => `${tenant.name} - Room ${tenant.room}, Joined ${tenant.joiningDate}`),
       metrics: [{ label: 'Joined this month', value: String(admissions.length), tone: admissions.length ? 'blue' : 'green' }],
       actions: admissions.length ? ['Check document completion for new tenants.'] : ['Admissions pipeline is quiet this month.'],
@@ -2336,6 +2408,7 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
       type: intent,
       title: 'Expense analysis',
       answer: topExpense ? `${topExpense.category} is currently the largest expense category at ${money(topExpense.amount)}.` : 'No expenses have been recorded yet.',
+      insight: topExpense ? `Track ${topExpense.category} closely this month. If it rises while occupancy is flat, profit will compress.` : 'Expense insight will improve once daily bills are entered.',
       bullets: expenseCategoryOptions.map((category) => {
         const amount = data.expenses.filter((expense) => expense.category === category || (!expense.category && expense.label.toLowerCase().includes(category.toLowerCase()))).reduce((sum, expense) => sum + expense.amount, 0);
         return amount ? `${category}: ${money(amount)}` : '';
@@ -2349,10 +2422,58 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
     };
   }
 
+  if (intent === 'documents') {
+    return {
+      type: intent,
+      title: 'Missing documents',
+      answer: missingDocs.length ? `${missingDocs.length} active tenants have incomplete documents.` : 'All active tenants have complete document sets.',
+      insight: missingDocs.length ? 'Missing documents create compliance risk. Close these before onboarding more tenants.' : 'Document hygiene is healthy.',
+      bullets: missingDocs.slice(0, 10).map((tenant) => `${tenant.name} - ${tenant.documentCount ?? 0}/${tenantDocumentTypes.length} documents`),
+      metrics: [{ label: 'Incomplete tenants', value: String(missingDocs.length), tone: missingDocs.length ? 'orange' : 'green' }],
+      actions: missingDocs.length ? ['Open tenant profile and upload missing documents.', 'Prioritize Aadhaar and agreement documents.'] : ['No document follow-up needed today.'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'daily_ops') {
+    return {
+      type: intent,
+      title: "Today's work",
+      answer: `Business Health is ${health.score}/100 (${health.label}).`,
+      insight: health.recommendation,
+      bullets: [...health.warnings, ...health.positives].slice(0, 8),
+      metrics: [
+        { label: 'Health Score', value: `${health.score}/100`, tone: health.tone },
+        { label: 'Pending Rent', value: money(summary.pendingRent), tone: summary.pendingRent ? 'red' : 'green' },
+        { label: 'Vacant Beds', value: String(vacantBeds.length), tone: vacantBeds.length ? 'orange' : 'green' },
+      ],
+      actions: [...health.warnings, health.recommendation].slice(0, 3),
+      source: 'local',
+    };
+  }
+
+  if (intent === 'reports') {
+    return {
+      type: intent,
+      title: 'Reports ready',
+      answer: 'You can generate tenant, pending rent, occupancy, expense summary, and profit & loss reports from Reports & analytics.',
+      insight: 'Reports are most useful after rent bills and expenses are updated for the month.',
+      bullets: ['Tenant List', 'Pending Rent', 'Occupancy', 'Expense Summary', 'Profit & Loss'],
+      metrics: [
+        { label: 'Income', value: money(summary.income), tone: 'green' },
+        { label: 'Expenses', value: money(summary.expensesTotal), tone: 'red' },
+        { label: 'Profit', value: money(summary.profit), tone: summary.profit >= 0 ? 'green' : 'red' },
+      ],
+      actions: ['Open More > Reports & analytics.', 'Export PDF, Excel, or CSV as needed.'],
+      source: 'local',
+    };
+  }
+
   return {
     type: 'general',
     title: 'Try a hostel question',
     answer: 'I can answer rent, vacant bed, vacate, profit, admission, and expense questions from your PGCopilot data.',
+    insight: 'Start with daily work, pending rent, vacant beds, profit, or missing documents.',
     bullets: ['Who has not paid rent?', 'Which beds are vacant?', "Show this month's profit.", 'Why did profit decrease?'],
     actions: ['Tap one of the suggested questions below.'],
     source: 'local',
@@ -2383,12 +2504,37 @@ async function askAiCopilot(question: string, data: PgMasterData): Promise<AiAns
 
 function AICopilot({ data }: { data: PgMasterData }) {
   const suggestions = [
+    "Today's work",
     'Who has not paid rent?',
     'Which beds are vacant?',
     'Who is vacating next month?',
     "Show this month's profit.",
     'Why did profit decrease?',
-    'Who joined this month?',
+    'Who has missing documents?',
+    'Generate report',
+  ];
+  const summary = buildSummary(data);
+  const health = buildBusinessHealth(data);
+  const pendingRows = getPendingRentRows(data);
+  const vacantBeds = getVacantBeds(data);
+  const today = new Date().toISOString().slice(0, 10);
+  const todayCheckIns = data.tenants.filter((tenant) => tenant.joiningDate === today).length;
+  const todayCheckOuts = data.tenants.filter((tenant) => tenant.vacateDate === today).length;
+  const todayFoodCost = data.expenses
+    .filter((expense) => expense.category === 'Food' && expense.date === today)
+    .reduce((sum, expense) => sum + expense.amount, 0);
+  const todayCollected = (data.rentBills ?? []).flatMap((bill) => bill.receipts)
+    .filter((receipt) => receipt.paymentDate.slice(0, 10) === today)
+    .reduce((sum, receipt) => sum + receipt.amount, 0);
+  const summaryTiles = [
+    { label: 'Occupancy', value: `${summary.occupancyRate}%`, icon: 'chart-donut' as IconName, tone: summary.occupancyRate >= 90 ? 'green' as Tone : 'orange' as Tone },
+    { label: 'Vacant Beds', value: String(vacantBeds.length), icon: 'bed-empty' as IconName, tone: vacantBeds.length ? 'orange' as Tone : 'green' as Tone },
+    { label: 'Pending Rent', value: money(summary.pendingRent), icon: 'wallet-outline' as IconName, tone: summary.pendingRent ? 'red' as Tone : 'green' as Tone },
+    { label: 'Cash Today', value: money(todayCollected), icon: 'cash-check' as IconName, tone: 'green' as Tone },
+    { label: 'Check-ins', value: String(todayCheckIns), icon: 'account-plus-outline' as IconName, tone: 'blue' as Tone },
+    { label: 'Check-outs', value: String(todayCheckOuts), icon: 'logout-variant' as IconName, tone: todayCheckOuts ? 'orange' as Tone : 'green' as Tone },
+    { label: 'Food Today', value: money(todayFoodCost), icon: 'silverware-fork-knife' as IconName, tone: todayFoodCost ? 'orange' as Tone : 'green' as Tone },
+    { label: 'Net Profit', value: money(summary.profit), icon: 'chart-line' as IconName, tone: summary.profit >= 0 ? 'green' as Tone : 'red' as Tone },
   ];
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<AiAnswer>(() => buildLocalAiAnswer("Show this month's profit.", data));
@@ -2409,9 +2555,38 @@ function AICopilot({ data }: { data: PgMasterData }) {
   return (
     <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
       <View style={styles.aiHero}>
-        <View style={styles.aiOrb}><AppIcon name="robot-outline" size={30} color="#FFF" /></View>
-        <Text style={styles.aiHeroTitle}>AI Copilot</Text>
-        <Text style={styles.aiHeroText}>Ask your hostel data. Rent, beds, expenses and profit in seconds.</Text>
+        <View style={styles.aiHeroTop}>
+          <View style={styles.aiOrb}><AppIcon name="robot-outline" size={30} color="#FFF" /></View>
+          <View style={styles.aiHealthRing}>
+            <Text style={styles.aiHealthScore}>{health.score}</Text>
+            <Text style={styles.aiHealthMax}>/100</Text>
+          </View>
+        </View>
+        <Text style={styles.aiHeroTitle}>Business Health: {health.label}</Text>
+        <Text style={styles.aiHeroText}>{health.recommendation}</Text>
+      </View>
+
+      <SectionTitle title="Today's business summary" />
+      <View style={styles.aiSummaryGrid}>
+        {summaryTiles.map((item) => (
+          <View key={item.label} style={styles.aiSummaryTile}>
+            <View style={[styles.aiSummaryIcon, { backgroundColor: toneBackground(item.tone) }]}>
+              <AppIcon name={item.icon} size={16} color={colors[item.tone]} />
+            </View>
+            <Text style={styles.aiSummaryValue}>{item.value}</Text>
+            <Text style={styles.aiSummaryLabel}>{item.label}</Text>
+          </View>
+        ))}
+      </View>
+
+      <SectionTitle title="Recommended actions" />
+      <View style={styles.aiActionPanel}>
+        {[...health.warnings, health.recommendation].slice(0, 4).map((item, index) => (
+          <View key={`${item}-${index}`} style={styles.aiActionRow}>
+            <AppIcon name={index === 0 && pendingRows.length ? 'message-text-outline' : 'lightbulb-on-outline'} size={18} color={colors.orange} />
+            <Text style={styles.aiActionText}>{item}</Text>
+          </View>
+        ))}
       </View>
 
       <View style={styles.aiAskCard}>
@@ -2431,6 +2606,7 @@ function AICopilot({ data }: { data: PgMasterData }) {
         </View>
       </View>
 
+      <SectionTitle title="Suggested questions" />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.aiSuggestionScroller}>
         {suggestions.map((item) => (
           <TouchableOpacity key={item} style={styles.aiSuggestionChip} onPress={() => submitQuestion(item)}>
@@ -2447,6 +2623,7 @@ function AICopilot({ data }: { data: PgMasterData }) {
           </View>
           <Chip label={answer.source === 'gemini' ? 'AI' : 'Local'} tone={answer.source === 'gemini' ? 'purple' : 'green'} />
         </View>
+        <Text style={styles.aiSectionLabel}>Answer</Text>
         <Text style={styles.aiAnswerText}>{answer.answer}</Text>
         {answer.metrics?.length ? (
           <View style={styles.aiMetricRow}>
@@ -2458,7 +2635,11 @@ function AICopilot({ data }: { data: PgMasterData }) {
             ))}
           </View>
         ) : null}
+        <Text style={styles.aiSectionLabel}>Business insight</Text>
+        <Text style={styles.aiAnswerText}>{answer.insight ?? health.recommendation}</Text>
         {answer.bullets.length ? (
+          <>
+          <Text style={styles.aiSectionLabel}>Details</Text>
           <View style={styles.aiBulletList}>
             {answer.bullets.map((item) => (
               <View key={item} style={styles.aiBulletRow}>
@@ -2467,10 +2648,11 @@ function AICopilot({ data }: { data: PgMasterData }) {
               </View>
             ))}
           </View>
+          </>
         ) : null}
       </View>
 
-      <SectionTitle title="Recommended actions" />
+      <SectionTitle title="Smart action cards" />
       <View style={styles.listCard}>
         {(answer.actions ?? []).map((item, index, all) => (
           <Activity key={item} icon="lightbulb-on-outline" tone="orange" title={item} caption="Suggested by PGCopilot AI" last={index === all.length - 1} />
@@ -3117,9 +3299,21 @@ const styles = StyleSheet.create({
   exportButton: { width: '48%', minHeight: 44, borderRadius: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 8 },
   exportButtonText: { color: colors.ink, fontSize: 11, fontWeight: '800' },
   aiHero: { backgroundColor: colors.ink, borderRadius: 22, padding: 22, marginBottom: 14, overflow: 'hidden' },
+  aiHeroTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 15 },
   aiOrb: { width: 58, height: 58, borderRadius: 21, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', marginBottom: 15 },
+  aiHealthRing: { width: 82, height: 82, borderRadius: 41, borderWidth: 7, borderColor: '#39B98D', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.06)' },
+  aiHealthScore: { color: '#FFF', fontSize: 24, fontWeight: '900' },
+  aiHealthMax: { color: '#B9CAC4', fontSize: 10, fontWeight: '800', marginTop: -2 },
   aiHeroTitle: { color: '#FFF', fontSize: 29, fontWeight: '900', letterSpacing: -0.8 },
   aiHeroText: { color: '#B9CAC4', fontSize: 13, lineHeight: 19, marginTop: 8 },
+  aiSummaryGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 16 },
+  aiSummaryTile: { width: '48%', backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 13, marginBottom: 10 },
+  aiSummaryIcon: { width: 31, height: 31, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 9 },
+  aiSummaryValue: { color: colors.ink, fontSize: 18, fontWeight: '900' },
+  aiSummaryLabel: { color: colors.muted, fontSize: 10.5, fontWeight: '700', marginTop: 3 },
+  aiActionPanel: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12, marginBottom: 15 },
+  aiActionRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 7 },
+  aiActionText: { flex: 1, color: colors.ink, fontSize: 12, lineHeight: 17, fontWeight: '700' },
   aiAskCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 14, marginBottom: 12 },
   aiInputRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8 },
   aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, outlineStyle: 'none' } as any,
@@ -3130,6 +3324,7 @@ const styles = StyleSheet.create({
   aiAnswerCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 18 },
   aiAnswerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
   aiAnswerTitle: { color: colors.ink, fontSize: 20, fontWeight: '900', marginTop: 4 },
+  aiSectionLabel: { color: colors.green, fontSize: 10, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 },
   aiAnswerText: { color: colors.ink, fontSize: 13, lineHeight: 20 },
   aiMetricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   aiMetricCard: { flexGrow: 1, minWidth: '30%', backgroundColor: colors.bg, borderRadius: 12, padding: 10 },
