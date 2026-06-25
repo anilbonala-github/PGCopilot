@@ -58,7 +58,7 @@ import {
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
 type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'AI' | 'More';
 type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
-type AiIntent = 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'command' | 'general';
+type AiIntent = 'greeting' | 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'command' | 'general';
 
 type AiAnswer = {
   type: AiIntent;
@@ -78,6 +78,23 @@ type BusinessHealth = {
   positives: string[];
   warnings: string[];
   recommendation: string;
+};
+
+type OwnerProfile = {
+  name: string;
+  phone?: string;
+  role: string;
+  propertyName: string;
+  propertyAddress?: string;
+  photoUrl?: string;
+};
+
+type AiChatMessage = {
+  id: string;
+  role: 'owner' | 'assistant';
+  text: string;
+  answer?: AiAnswer;
+  createdAt: Date;
 };
 
 type AiCommand =
@@ -148,6 +165,18 @@ const initialsForName = (name: string) =>
     .join('') || 'PG';
 
 const pgcopilotLogo = require('./assets/login-mark.png');
+
+const greetingForTime = () => {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
+};
+
+const formatChatTime = (date: Date) =>
+  date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+
+const newAiMessageId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 function AppIcon({ name, size = 20, color = colors.green }: { name: IconName; size?: number; color?: string }) {
   return <MaterialCommunityIcons name={name} size={size} color={color} />;
@@ -2193,6 +2222,23 @@ function buildAiInsights(data: PgMasterData): { title: string; text: string; ico
   ];
 }
 
+function OwnerAvatarButton({ profile, size = 43, onPress }: { profile: OwnerProfile; size?: number; onPress: () => void }) {
+  const initials = initialsForName(profile.name || profile.phone || 'Owner');
+  return (
+    <TouchableOpacity
+      style={[styles.ownerAvatarButton, { width: size, height: size, borderRadius: size / 2 }]}
+      onPress={onPress}
+      activeOpacity={0.85}
+    >
+      {profile.photoUrl ? (
+        <Image source={{ uri: profile.photoUrl }} style={{ width: size, height: size, borderRadius: size / 2 }} resizeMode="cover" />
+      ) : (
+        <Text style={styles.ownerAvatarText}>{initials}</Text>
+      )}
+    </TouchableOpacity>
+  );
+}
+
 function getMissingDocumentTenants(data: PgMasterData) {
   return data.tenants.filter((tenant) => tenant.admissionStatus !== 'Vacated' && (tenant.documentCount ?? 0) < tenantDocumentTypes.length);
 }
@@ -2246,7 +2292,9 @@ function buildBusinessHealth(data: PgMasterData): BusinessHealth {
 
 function detectAiIntent(question: string): AiIntent {
   const text = question.toLowerCase();
+  const compact = text.trim().replace(/[.!?]+$/g, '');
   if (detectAiCommand(question, fallbackData)) return 'command';
+  if (['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'gm'].includes(compact) || compact.includes('what would you like to do')) return 'greeting';
   if (text.includes('not paid') || text.includes('pending rent') || text.includes('rent due') || text.includes('unpaid')) return 'pending_rent';
   if (text.includes('vacant') || text.includes('available bed') || text.includes('free bed') || text.includes('available room')) return 'vacant_beds';
   if (text.includes('vacating') || text.includes('leaving') || text.includes('departure') || text.includes('vacate')) return 'vacating_next_month';
@@ -2462,6 +2510,28 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
   const missingDocs = getMissingDocumentTenants(data);
   const health = buildBusinessHealth(data);
 
+  if (intent === 'greeting') {
+    return {
+      type: intent,
+      title: `${greetingForTime()}, Anil`,
+      answer: 'Hello Anil. I am ready to help you run the hostel today.',
+      insight: health.recommendation,
+      bullets: [
+        `Business Health is ${health.score}/100 (${health.label}).`,
+        `Pending rent is ${money(summary.pendingRent)}.`,
+        `${vacantBeds.length} beds are vacant.`,
+        'Ask me about rent, beds, expenses, reports, or today\'s work.',
+      ],
+      metrics: [
+        { label: 'Health', value: `${health.score}/100`, tone: health.tone },
+        { label: 'Pending', value: money(summary.pendingRent), tone: summary.pendingRent ? 'red' : 'green' },
+        { label: 'Vacant', value: String(vacantBeds.length), tone: vacantBeds.length ? 'orange' : 'green' },
+      ],
+      actions: ["Today's work", 'Who has not paid rent?', 'Which beds are vacant?'],
+      source: 'local',
+    };
+  }
+
   if (intent === 'pending_rent') {
     const total = pendingRows.reduce((sum, item) => sum + item.pendingAmount, 0);
     return {
@@ -2663,17 +2733,23 @@ async function askAiCopilot(question: string, data: PgMasterData): Promise<AiAns
 
 function AICopilot({
   data,
+  ownerProfile,
   onRecordPayment,
   onAddExpense,
   onNavigate,
+  onOpenOwnerProfile,
 }: {
   data: PgMasterData;
+  ownerProfile: OwnerProfile;
   onRecordPayment: (input: RecordRentPaymentInput) => Promise<void>;
   onAddExpense: (input: NewExpenseInput) => Promise<void>;
   onNavigate: (tab: Tab) => void;
+  onOpenOwnerProfile: () => void;
 }) {
   const suggestions = [
     "Today's work",
+    'Good morning',
+    'Hello',
     'Who has not paid rent?',
     'Which beds are vacant?',
     'Who is vacating next month?',
@@ -2712,24 +2788,86 @@ function AICopilot({
     { label: `${getThisMonthAdmissions(data).length} new admissions this month`, icon: 'account-plus-outline' as IconName, tone: 'blue' as Tone },
   ];
   const [question, setQuestion] = useState('');
-  const [answer, setAnswer] = useState<AiAnswer>(() => buildLocalAiAnswer("Show this month's profit.", data));
+  const [answer, setAnswer] = useState<AiAnswer>(() => buildLocalAiAnswer("Today's work", data));
+  const [history, setHistory] = useState<AiChatMessage[]>(() => {
+    const firstAnswer = buildLocalAiAnswer("Today's work", data);
+    return [{
+      id: newAiMessageId(),
+      role: 'assistant',
+      text: firstAnswer.answer,
+      answer: firstAnswer,
+      createdAt: new Date(),
+    }];
+  });
   const [pendingCommand, setPendingCommand] = useState<AiCommand | undefined>();
   const [commandMessage, setCommandMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
+
+  const filteredSuggestions = question.trim()
+    ? suggestions
+        .filter((item) => item.toLowerCase().includes(question.trim().toLowerCase()) || question.trim().length >= 3)
+        .slice(0, 4)
+    : suggestions.slice(0, 5);
+
+  const startVoiceInput = () => {
+    Keyboard.dismiss();
+    setCommandMessage(undefined);
+    setVoiceActive(true);
+    const SpeechRecognition = (globalThis as any).SpeechRecognition || (globalThis as any).webkitSpeechRecognition;
+    if (Platform.OS === 'web' && SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'en-IN';
+      recognition.interimResults = false;
+      recognition.maxAlternatives = 1;
+      recognition.onresult = (event: any) => {
+        const transcript = event?.results?.[0]?.[0]?.transcript;
+        if (transcript) setQuestion(transcript);
+      };
+      recognition.onerror = () => {
+        setCommandMessage('Voice input was not available. Please type your question.');
+        setVoiceActive(false);
+      };
+      recognition.onend = () => setVoiceActive(false);
+      recognition.start();
+      return;
+    }
+    setCommandMessage('Voice input is ready for web browsers that support speech recognition. Native iOS/Android voice needs the next Expo speech package step.');
+    setTimeout(() => setVoiceActive(false), 700);
+  };
 
   const submitQuestion = async (value = question) => {
     const trimmed = value.trim();
     if (!trimmed) return;
     Keyboard.dismiss();
-    setQuestion(trimmed);
+    setQuestion('');
     setCommandMessage(undefined);
+    const userMessage: AiChatMessage = { id: newAiMessageId(), role: 'owner', text: trimmed, createdAt: new Date() };
+    setHistory((current) => [...current, userMessage]);
     const command = detectAiCommand(trimmed, data);
     setPendingCommand(command);
-    setAnswer(buildLocalAiAnswer(trimmed, data));
-    if (command) return;
+    const localAnswer = buildLocalAiAnswer(trimmed, data);
+    setAnswer(localAnswer);
+    if (command) {
+      setHistory((current) => [...current, {
+        id: newAiMessageId(),
+        role: 'assistant',
+        text: localAnswer.answer,
+        answer: localAnswer,
+        createdAt: new Date(),
+      }]);
+      return;
+    }
     setLoading(true);
     const nextAnswer = await askAiCopilot(trimmed, data);
     setAnswer(nextAnswer);
+    setHistory((current) => [...current, {
+      id: newAiMessageId(),
+      role: 'assistant',
+      text: nextAnswer.answer,
+      answer: nextAnswer,
+      createdAt: new Date(),
+    }]);
     setLoading(false);
   };
 
@@ -2770,25 +2908,96 @@ function AICopilot({
     }
   };
 
+  const renderAnswerCard = (itemAnswer: AiAnswer) => (
+    <View style={styles.aiAnswerCard}>
+      <View style={styles.aiAnswerHeader}>
+        <View style={styles.flex}>
+          <Text style={styles.cardEyebrow}>{itemAnswer.source === 'gemini' ? 'GEMINI ASSISTED' : 'PGCOPILOT AI'}</Text>
+          <Text style={styles.aiAnswerTitle}>{itemAnswer.title}</Text>
+        </View>
+        <TouchableOpacity style={styles.aiDetailsButton} onPress={() => itemAnswer.type === 'pending_rent' ? onNavigate('Rent') : undefined}>
+          <Text style={styles.aiDetailsText}>View details</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={styles.aiAnswerText}>{itemAnswer.answer}</Text>
+      {itemAnswer.metrics?.length ? (
+        <View style={styles.aiMetricRow}>
+          {itemAnswer.metrics.map((item) => (
+            <View key={`${itemAnswer.title}-${item.label}`} style={styles.aiMetricCard}>
+              <Text style={styles.smallMuted}>{item.label}</Text>
+              <Text style={[styles.aiMetricValue, { color: colors[item.tone] }]}>{item.value}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {itemAnswer.type === 'pending_rent' && pendingRows.length ? (
+        <View style={styles.aiTable}>
+          <View style={styles.aiTableHeader}><Text style={styles.aiTableHeadTenant}>Tenant</Text><Text style={styles.aiTableHead}>Room</Text><Text style={styles.aiTableHead}>Pending</Text></View>
+          {pendingRows.slice(0, 4).map((item) => (
+            <View key={`${itemAnswer.title}-${item.tenantName}-${item.room}`} style={styles.aiTableRow}>
+              <View style={styles.aiTableTenant}><TenantAvatar name={item.tenantName} initials={initialsForName(item.tenantName)} /><Text style={styles.tenantName}>{item.tenantName}</Text></View>
+              <Text style={styles.aiTableCell}>{item.room}</Text>
+              <Text style={[styles.aiTableCell, { color: colors.red }]}>{money(item.pendingAmount)}</Text>
+            </View>
+          ))}
+        </View>
+      ) : itemAnswer.bullets.length ? (
+        <View style={styles.aiBulletList}>
+          {itemAnswer.bullets.map((item) => (
+            <View key={`${itemAnswer.title}-${item}`} style={styles.aiBulletRow}>
+              <View style={styles.aiBulletDot} />
+              <Text style={styles.aiBulletText}>{item}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {itemAnswer.actions?.length ? (
+        <View style={styles.aiSmartGrid}>
+          {itemAnswer.actions.map((item, index) => (
+            <TouchableOpacity
+              key={`${itemAnswer.title}-${item}`}
+              style={styles.aiSmartAction}
+              onPress={() => {
+                if (item.toLowerCase().includes('rent')) onNavigate('Rent');
+                else if (item.toLowerCase().includes('report')) onNavigate('More');
+                else if (item.toLowerCase().includes('tenant') || item.toLowerCase().includes('document')) onNavigate('Tenants');
+                else submitQuestion(item);
+              }}
+            >
+              <View style={[styles.aiSummaryIcon, { backgroundColor: index === 0 ? colors.paleGreen : colors.paleBlue }]}>
+                <AppIcon name={index === 0 ? 'cash-multiple' : index === 1 ? 'bed-empty' : 'format-list-bulleted'} size={16} color={index === 0 ? colors.green : colors.blue} />
+              </View>
+              <Text style={styles.aiActionText}>{item}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : null}
+      <View style={styles.aiInsightRecommendationRow}>
+        <View style={styles.aiInsightBox}><AppIcon name="lightbulb-on-outline" size={18} color={colors.orange} /><Text style={styles.aiInsightBoxText}>{itemAnswer.insight ?? health.recommendation}</Text></View>
+      </View>
+    </View>
+  );
+
   return (
-    <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+    <View style={styles.aiScreen}>
       <View style={styles.aiTopBar}>
         <View style={styles.aiBrandIcon}><AppIcon name="robot-outline" size={28} color="#FFF" /></View>
         <View style={styles.flex}>
-          <Text style={styles.aiTopTitle}>AI Copilot</Text>
+          <Text style={styles.aiTopTitle}>PGCopilot AI</Text>
           <Text style={styles.aiTopSubtitle}>Your smart hostel manager</Text>
         </View>
         <TouchableOpacity style={styles.aiBellButton}>
           <AppIcon name="bell-outline" size={21} color={colors.ink} />
           {pendingRows.length ? <View style={styles.aiBadge}><Text style={styles.aiBadgeText}>{Math.min(9, pendingRows.length)}</Text></View> : null}
         </TouchableOpacity>
-        <View style={styles.aiOwnerAvatar}><Text style={styles.aiOwnerInitial}>A</Text></View>
+        <OwnerAvatarButton profile={ownerProfile} size={44} onPress={onOpenOwnerProfile} />
       </View>
 
+      <ScrollView showsVerticalScrollIndicator={false} style={styles.aiBody} contentContainerStyle={styles.aiBodyContent} keyboardShouldPersistTaps="handled">
       <View style={styles.aiOverviewCard}>
         <View style={styles.aiOverviewHeader}>
           <View style={styles.flex}>
-            <Text style={styles.aiGreeting}>Good morning, Anil</Text>
+            <Text style={styles.aiGreeting}>{greetingForTime()}, {ownerProfile.name.split(' ')[0] || 'Owner'}</Text>
             <Text style={styles.aiOverviewText}>Here's your business overview for today.</Text>
           </View>
           <View style={styles.aiHealthPill}>
@@ -2805,7 +3014,7 @@ function AICopilot({
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiSummaryScroller}>
           {summaryTiles.slice(0, 5).map((item) => (
-            <View key={item.label} style={styles.aiSummaryTileWide}>
+            <View key={item.label} style={styles.aiSummaryTileCompact}>
               <View style={[styles.aiSummaryIcon, { backgroundColor: toneBackground(item.tone) }]}>
                 <AppIcon name={item.icon} size={16} color={colors[item.tone]} />
               </View>
@@ -2832,48 +3041,27 @@ function AICopilot({
         </ScrollView>
       </View>
 
-      <View style={styles.aiAskPanel}>
-        <View style={styles.aiAskHeader}>
-          <Text style={styles.aiAskTitle}>What would you like to do today?</Text>
-          <TouchableOpacity style={styles.aiVoiceButton} onPress={() => submitQuestion("Today's work")}>
-            <AppIcon name="microphone-outline" size={24} color="#FFF" />
-          </TouchableOpacity>
-        </View>
-        <View style={styles.aiInputRowLarge}>
-          <TextInput
-            style={styles.aiInput}
-            placeholder="Ask PGCopilot anything..."
-            value={question}
-            onChangeText={setQuestion}
-            returnKeyType="send"
-            onSubmitEditing={() => submitQuestion()}
-          />
-          <TouchableOpacity style={styles.aiSendButton} onPress={() => submitQuestion()} disabled={loading}>
-            <AppIcon name={loading ? 'timer-sand' : 'send'} size={18} color="#FFF" />
-          </TouchableOpacity>
-        </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiSuggestionScrollerContent}>
-          {suggestions.slice(1, 7).map((item) => (
-            <TouchableOpacity key={item} style={styles.aiPromptCard} onPress={() => submitQuestion(item)}>
-              <View style={[styles.aiPromptIcon, { backgroundColor: colors.paleGreen }]}>
-                <AppIcon name={item.includes('bed') ? 'bed-empty' : item.includes('profit') ? 'chart-bar' : item.includes('Food') ? 'silverware-fork-knife' : item.includes('report') ? 'calendar-text-outline' : 'cash-multiple'} size={15} color={colors.green} />
-              </View>
-              <Text style={styles.aiPromptText}>{item}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-
       <View style={styles.aiChatHistory}>
-        <View style={styles.aiUserBubble}>
-          <Text style={styles.aiUserBubbleText}>{question || 'Who has not paid rent?'}</Text>
-          <Text style={styles.aiBubbleTime}>09:30 AM</Text>
-          <AppIcon name="check-all" size={15} color={colors.green} />
-        </View>
-        <View style={styles.aiAssistantLabel}>
-          <View style={styles.aiAssistantIcon}><AppIcon name="robot-outline" size={16} color="#FFF" /></View>
-          <Text style={styles.aiAssistantName}>PGCopilot AI</Text>
-        </View>
+        <Text style={styles.sectionTitle}>Copilot history</Text>
+        {history.map((message) => message.role === 'owner' ? (
+          <View key={message.id} style={styles.aiUserMessageRow}>
+            <View style={styles.aiUserBubble}>
+              <Text style={styles.aiUserBubbleText}>{message.text}</Text>
+              <Text style={styles.aiBubbleTime}>{formatChatTime(message.createdAt)}</Text>
+              <AppIcon name="check-all" size={15} color={colors.green} />
+            </View>
+            <OwnerAvatarButton profile={ownerProfile} size={34} onPress={onOpenOwnerProfile} />
+          </View>
+        ) : (
+          <View key={message.id}>
+            <View style={styles.aiAssistantLabel}>
+              <View style={styles.aiAssistantIcon}><AppIcon name="robot-outline" size={16} color="#FFF" /></View>
+              <Text style={styles.aiAssistantName}>PGCopilot AI</Text>
+              <Text style={styles.aiBubbleTime}>{formatChatTime(message.createdAt)}</Text>
+            </View>
+            {message.answer ? renderAnswerCard(message.answer) : <Text style={styles.aiAnswerText}>{message.text}</Text>}
+          </View>
+        ))}
 
         {pendingCommand ? (
           <View style={styles.aiCommandCard}>
@@ -2898,82 +3086,38 @@ function AICopilot({
         ) : null}
         {commandMessage ? <Text style={styles.inviteMessage}>{commandMessage}</Text> : null}
 
-        <View style={styles.aiAnswerCard}>
-          <View style={styles.aiAnswerHeader}>
-            <View>
-              <Text style={styles.cardEyebrow}>{answer.source === 'gemini' ? 'GEMINI ASSISTED' : 'PGCOPILOT AI'}</Text>
-              <Text style={styles.aiAnswerTitle}>{answer.title}</Text>
-            </View>
-            <TouchableOpacity style={styles.aiDetailsButton} onPress={() => answer.type === 'pending_rent' ? onNavigate('Rent') : undefined}>
-              <Text style={styles.aiDetailsText}>View details</Text>
+      </View>
+      </ScrollView>
+
+      <View style={styles.aiStickyComposer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiSuggestionScrollerContent}>
+          {filteredSuggestions.map((item) => (
+            <TouchableOpacity key={item} style={styles.aiPromptCard} onPress={() => submitQuestion(item)}>
+              <View style={[styles.aiPromptIcon, { backgroundColor: colors.paleGreen }]}>
+                <AppIcon name={item.toLowerCase().includes('bed') ? 'bed-empty' : item.toLowerCase().includes('profit') ? 'chart-bar' : item.toLowerCase().includes('hello') || item.toLowerCase().includes('morning') ? 'hand-wave-outline' : 'cash-multiple'} size={15} color={colors.green} />
+              </View>
+              <Text style={styles.aiPromptText}>{item}</Text>
             </TouchableOpacity>
-          </View>
-          <Text style={styles.aiAnswerText}>{answer.answer}</Text>
-          {answer.metrics?.length ? (
-            <View style={styles.aiMetricRow}>
-              {answer.metrics.map((item) => (
-                <View key={item.label} style={styles.aiMetricCard}>
-                  <Text style={styles.smallMuted}>{item.label}</Text>
-                  <Text style={[styles.aiMetricValue, { color: colors[item.tone] }]}>{item.value}</Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {answer.type === 'pending_rent' && pendingRows.length ? (
-            <View style={styles.aiTable}>
-              <View style={styles.aiTableHeader}><Text style={styles.aiTableHeadTenant}>Tenant</Text><Text style={styles.aiTableHead}>Room</Text><Text style={styles.aiTableHead}>Pending</Text></View>
-              {pendingRows.slice(0, 4).map((item) => (
-                <View key={`${item.tenantName}-${item.room}`} style={styles.aiTableRow}>
-                  <View style={styles.aiTableTenant}><TenantAvatar name={item.tenantName} initials={initialsForName(item.tenantName)} /><Text style={styles.tenantName}>{item.tenantName}</Text></View>
-                  <Text style={styles.aiTableCell}>{item.room}</Text>
-                  <Text style={[styles.aiTableCell, { color: colors.red }]}>{money(item.pendingAmount)}</Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          {answer.bullets.length && answer.type !== 'pending_rent' ? (
-            <View style={styles.aiBulletList}>
-              {answer.bullets.map((item) => (
-                <View key={item} style={styles.aiBulletRow}>
-                  <View style={styles.aiBulletDot} />
-                  <Text style={styles.aiBulletText}>{item}</Text>
-                </View>
-              ))}
-            </View>
-          ) : null}
-          <View style={styles.aiSmartGrid}>
-            {(answer.actions ?? []).map((item, index) => (
-              <TouchableOpacity
-                key={item}
-                style={styles.aiSmartAction}
-                onPress={() => {
-                  if (item.toLowerCase().includes('rent')) onNavigate('Rent');
-                  else if (item.toLowerCase().includes('report')) onNavigate('More');
-                  else if (item.toLowerCase().includes('tenant') || item.toLowerCase().includes('document')) onNavigate('Tenants');
-                }}
-              >
-                <View style={[styles.aiSummaryIcon, { backgroundColor: index === 0 ? colors.paleGreen : colors.paleBlue }]}>
-                  <AppIcon name={index === 0 ? 'whatsapp' : index === 1 ? 'phone-outline' : index === 2 ? 'cash-plus' : 'format-list-bulleted'} size={16} color={index === 0 ? colors.green : colors.blue} />
-                </View>
-                <Text style={styles.aiActionText}>{item}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-          <View style={styles.aiInsightRecommendationRow}>
-            <View style={styles.aiInsightBox}><AppIcon name="lightbulb-on-outline" size={18} color={colors.orange} /><Text style={styles.aiInsightBoxText}>{answer.insight ?? health.recommendation}</Text></View>
-            <View style={styles.aiInsightBox}><AppIcon name="target" size={18} color={colors.red} /><Text style={styles.aiInsightBoxText}>{health.recommendation}</Text></View>
-          </View>
+          ))}
+        </ScrollView>
+        <View style={styles.aiInputRowLarge}>
+          <TouchableOpacity style={[styles.aiInlineVoiceButton, voiceActive && styles.aiInlineVoiceButtonActive]} onPress={startVoiceInput}>
+            <AppIcon name={voiceActive ? 'microphone' : 'microphone-outline'} size={20} color={voiceActive ? '#FFF' : colors.green} />
+          </TouchableOpacity>
+          <TextInput
+            style={styles.aiInput}
+            placeholder="Ask PGCopilot AI..."
+            value={question}
+            onChangeText={setQuestion}
+            returnKeyType="send"
+            onSubmitEditing={() => submitQuestion()}
+          />
+          <TouchableOpacity style={styles.aiSendButton} onPress={() => submitQuestion()} disabled={loading}>
+            <AppIcon name={loading ? 'timer-sand' : 'send'} size={18} color="#FFF" />
+          </TouchableOpacity>
         </View>
       </View>
-
-      <View style={styles.aiVoiceDock}>
-        <Text style={styles.aiVoiceDockText}>Tap to speak</Text>
-        <TouchableOpacity style={styles.aiVoiceDockButton} onPress={() => submitQuestion("Today's work")}>
-          <AppIcon name="microphone-outline" size={30} color="#FFF" />
-        </TouchableOpacity>
-        <Text style={styles.aiVoiceDockText}>English (US)</Text>
-      </View>
-    </ScrollView>
+    </View>
   );
 }
 
@@ -3143,6 +3287,76 @@ function DocumentViewerModal({ document, onClose }: { document?: TenantDocument;
   );
 }
 
+function OwnerProfileModal({
+  visible,
+  profile,
+  onClose,
+  onSave,
+}: {
+  visible: boolean;
+  profile: OwnerProfile;
+  onClose: () => void;
+  onSave: (profile: OwnerProfile) => void;
+}) {
+  const [draft, setDraft] = useState(profile);
+
+  useEffect(() => {
+    if (visible) setDraft(profile);
+  }, [visible, profile]);
+
+  const update = (key: keyof OwnerProfile, value: string) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide">
+      <SafeAreaView style={styles.app}>
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <View style={styles.backHeader}>
+            <TouchableOpacity style={styles.backButton} onPress={onClose}><AppIcon name="chevron-left" size={24} color={colors.green} /></TouchableOpacity>
+            <View style={styles.flex}>
+              <Text style={styles.pageTitle}>Owner profile</Text>
+              <Text style={styles.subtitle}>View and update owner details</Text>
+            </View>
+          </View>
+
+          <View style={styles.ownerProfileHero}>
+            <OwnerAvatarButton profile={draft} size={68} onPress={() => undefined} />
+            <View style={styles.flex}>
+              <Text style={styles.ownerProfileName}>{draft.name || 'Owner'}</Text>
+              <Text style={styles.ownerProfileMeta}>{draft.role}</Text>
+              <Text style={styles.ownerProfileMeta}>{draft.propertyName}</Text>
+            </View>
+          </View>
+
+          <View style={styles.formCard}>
+            <Text style={styles.loginFieldLabel}>FULL NAME</Text>
+            <TextInput style={styles.formInput} value={draft.name} onChangeText={(value) => update('name', value)} placeholder="Owner name" />
+            <Text style={styles.loginFieldLabel}>MOBILE NUMBER</Text>
+            <TextInput style={styles.formInput} value={draft.phone ?? ''} onChangeText={(value) => update('phone', value)} placeholder="Mobile number" keyboardType="phone-pad" />
+            <Text style={styles.loginFieldLabel}>ROLE</Text>
+            <TextInput style={styles.formInput} value={draft.role} onChangeText={(value) => update('role', value)} placeholder="Owner / Staff" />
+            <Text style={styles.loginFieldLabel}>HOSTEL</Text>
+            <TextInput style={styles.formInput} value={draft.propertyName} onChangeText={(value) => update('propertyName', value)} placeholder="Hostel name" />
+            <Text style={styles.loginFieldLabel}>ADDRESS</Text>
+            <TextInput style={[styles.formInput, styles.textArea]} value={draft.propertyAddress ?? ''} onChangeText={(value) => update('propertyAddress', value)} placeholder="Hostel address" multiline />
+          </View>
+
+          <TouchableOpacity
+            style={styles.primaryButton}
+            onPress={() => {
+              onSave(draft);
+              onClose();
+            }}
+          >
+            <Text style={styles.primaryButtonText}>Save profile</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
 function HostelSetup({
   onCreate,
   onLogout,
@@ -3219,8 +3433,22 @@ export default function App() {
   const [savingHostel, setSavingHostel] = useState(false);
   const [selectedHostelId, setSelectedHostelId] = useState<string | undefined>();
   const [liveDataReady, setLiveDataReady] = useState(!isSupabaseConfigured);
+  const [ownerProfileOpen, setOwnerProfileOpen] = useState(false);
+  const [ownerProfileDraft, setOwnerProfileDraft] = useState<Partial<OwnerProfile>>({});
 
   const authenticated = demoMode || Boolean(session);
+  const ownerProfile = useMemo<OwnerProfile>(() => {
+    const sessionName = String(session?.user?.user_metadata?.full_name ?? '').trim();
+    const phone = session?.user?.phone ?? '';
+    return {
+      name: ownerProfileDraft.name || sessionName || (phone ? `Owner ${phone.slice(-4)}` : 'Anil'),
+      phone: ownerProfileDraft.phone ?? phone,
+      role: ownerProfileDraft.role ?? pgData.currentUserRole ?? 'Owner',
+      propertyName: ownerProfileDraft.propertyName ?? pgData.propertyName,
+      propertyAddress: ownerProfileDraft.propertyAddress ?? pgData.propertyAddress,
+      photoUrl: ownerProfileDraft.photoUrl,
+    };
+  }, [ownerProfileDraft, pgData.currentUserRole, pgData.propertyAddress, pgData.propertyName, session]);
 
   const refreshData = async (hostelId = selectedHostelId) => {
     setLoadingData(true);
@@ -3387,10 +3615,10 @@ export default function App() {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
     if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} onUpdateTenant={handleUpdateTenant} onVacateTenant={handleVacateTenant} onRecordPayment={handleRecordPayment} onGenerateRent={handleGenerateRent} />;
     if (tab === 'Rent') return <Rent data={pgData} onGenerateRent={handleGenerateRent} onRecordPayment={handleRecordPayment} />;
-    if (tab === 'AI') return <AICopilot data={pgData} onRecordPayment={handleRecordPayment} onAddExpense={handleAddExpense} onNavigate={setTab} />;
+    if (tab === 'AI') return <AICopilot data={pgData} ownerProfile={ownerProfile} onRecordPayment={handleRecordPayment} onAddExpense={handleAddExpense} onNavigate={setTab} onOpenOwnerProfile={() => setOwnerProfileOpen(true)} />;
     if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onAddExpense={handleAddExpense} onNavigate={setTab} onLogout={handleLogout} />;
     return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} onSelectHostel={handleSelectHostel} onCreateHostel={handleCreateHostel} />;
-  }, [tab, pgData, loadingData, dataSource, dataError]);
+  }, [tab, pgData, loadingData, dataSource, dataError, ownerProfile]);
 
   if (!authReady) return <SafeAreaView style={styles.loginScreen}><Text style={styles.loginTitle}>Loading PGCopilot...</Text></SafeAreaView>;
   if (!authenticated) return <><StatusBar style="dark" /><Login authEnabled={isSupabaseConfigured} onDemoLogin={() => setDemoMode(true)} onSendOtp={handleSendOtp} onVerifyOtp={handleVerifyOtp} loading={authLoading} error={authError} /></>;
@@ -3400,6 +3628,17 @@ export default function App() {
     <SafeAreaView style={styles.app}>
       <StatusBar style="dark" />
       <View style={styles.content}>{content}</View>
+      {tab !== 'AI' ? (
+        <View style={styles.globalOwnerAvatar}>
+          <OwnerAvatarButton profile={ownerProfile} size={42} onPress={() => setOwnerProfileOpen(true)} />
+        </View>
+      ) : null}
+      <OwnerProfileModal
+        visible={ownerProfileOpen}
+        profile={ownerProfile}
+        onClose={() => setOwnerProfileOpen(false)}
+        onSave={(nextProfile) => setOwnerProfileDraft(nextProfile)}
+      />
       <BottomNav active={tab} onPress={setTab} />
     </SafeAreaView>
   );
@@ -3422,6 +3661,9 @@ const styles = StyleSheet.create({
   propertyRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
   propertyName: { color: colors.green, fontSize: 13, fontWeight: '700' },
   iconButton: { width: 43, height: 43, borderRadius: 22, backgroundColor: colors.card, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.line },
+  ownerAvatarButton: { backgroundColor: colors.paleGreen, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#CDEADE', overflow: 'hidden' },
+  ownerAvatarText: { color: colors.green, fontSize: 13, fontWeight: '900' },
+  globalOwnerAvatar: { position: 'absolute', top: Platform.OS === 'android' ? (NativeStatusBar.currentHeight ?? 0) + 12 : 14, right: 16, zIndex: 20 },
   notificationDot: { position: 'absolute', right: 10, top: 9, width: 7, height: 7, borderRadius: 4, backgroundColor: colors.orange, borderWidth: 1, borderColor: '#FFF' },
   pageTitle: { fontSize: 25, color: colors.ink, fontWeight: '800', letterSpacing: -0.6 },
   subtitle: { color: colors.muted, fontSize: 13, marginTop: 5 },
@@ -3613,7 +3855,10 @@ const styles = StyleSheet.create({
   exportGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, marginBottom: 24 },
   exportButton: { width: '48%', minHeight: 44, borderRadius: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 8 },
   exportButtonText: { color: colors.ink, fontSize: 11, fontWeight: '800' },
-  aiTopBar: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
+  aiScreen: { flex: 1, backgroundColor: colors.bg },
+  aiTopBar: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingTop: 16, paddingBottom: 12, backgroundColor: colors.bg, borderBottomWidth: 1, borderBottomColor: 'rgba(232,236,232,0.75)', zIndex: 5 },
+  aiBody: { flex: 1 },
+  aiBodyContent: { padding: 20, paddingBottom: 138 },
   aiBrandIcon: { width: 54, height: 54, borderRadius: 18, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
   aiTopTitle: { color: colors.ink, fontSize: 25, fontWeight: '900', letterSpacing: -0.6 },
   aiTopSubtitle: { color: colors.muted, fontSize: 13, marginTop: 3 },
@@ -3634,6 +3879,7 @@ const styles = StyleSheet.create({
   aiHealthStatus: { fontSize: 11, fontWeight: '800', marginTop: 2 },
   aiSummaryScroller: { gap: 9, paddingBottom: 4 },
   aiSummaryTileWide: { width: 126, minHeight: 118, borderRadius: 15, backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, padding: 12 },
+  aiSummaryTileCompact: { width: 108, minHeight: 100, borderRadius: 14, backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, padding: 10 },
   aiSummaryIcon: { width: 31, height: 31, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 9 },
   aiSummaryLabelTop: { color: colors.ink, fontSize: 11, fontWeight: '800', minHeight: 27 },
   aiSummaryValueLarge: { color: colors.ink, fontSize: 22, fontWeight: '900', marginTop: 8 },
@@ -3653,11 +3899,15 @@ const styles = StyleSheet.create({
   aiInputRowLarge: { flexDirection: 'row', alignItems: 'center', gap: 9, minHeight: 51, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingLeft: 13, marginBottom: 13 },
   aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, outlineStyle: 'none' } as any,
   aiSendButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
+  aiStickyComposer: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFFF2', borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 14, paddingTop: 10, paddingBottom: Platform.OS === 'ios' ? 18 : 10 },
+  aiInlineVoiceButton: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.paleGreen, alignItems: 'center', justifyContent: 'center' },
+  aiInlineVoiceButtonActive: { backgroundColor: colors.green },
   aiSuggestionScrollerContent: { gap: 9 },
   aiPromptCard: { width: 132, borderRadius: 14, borderWidth: 1, borderColor: colors.line, backgroundColor: '#FFF', padding: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
   aiPromptIcon: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   aiPromptText: { flex: 1, color: colors.ink, fontSize: 10.5, fontWeight: '800', lineHeight: 14 },
-  aiChatHistory: { backgroundColor: '#FBFCFA', borderRadius: 20, borderWidth: 1, borderColor: colors.line, padding: 12, marginBottom: 16 },
+  aiChatHistory: { backgroundColor: '#FBFCFA', borderRadius: 20, borderWidth: 1, borderColor: colors.line, padding: 12, marginBottom: 16, gap: 10 },
+  aiUserMessageRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 4 },
   aiUserBubble: { alignSelf: 'flex-end', maxWidth: '86%', backgroundColor: '#E6F7EC', borderRadius: 16, padding: 12, marginBottom: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
   aiUserBubbleText: { color: colors.ink, fontSize: 13, fontWeight: '700' },
   aiBubbleTime: { color: colors.muted, fontSize: 11 },
@@ -3693,6 +3943,12 @@ const styles = StyleSheet.create({
   aiVoiceDock: { height: 72, borderRadius: 36, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, marginBottom: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', paddingHorizontal: 12 },
   aiVoiceDockButton: { width: 70, height: 70, borderRadius: 35, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center', marginTop: -18 },
   aiVoiceDockText: { color: colors.muted, fontSize: 13, fontWeight: '800' },
+  ownerProfileHero: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 16 },
+  ownerProfileName: { color: colors.ink, fontSize: 22, fontWeight: '900' },
+  ownerProfileMeta: { color: colors.muted, fontSize: 12, fontWeight: '700', marginTop: 4 },
+  formCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 16, marginBottom: 16 },
+  formInput: { minHeight: 46, borderWidth: 1, borderColor: colors.line, borderRadius: 12, paddingHorizontal: 12, color: colors.ink, fontSize: 13, marginBottom: 14, outlineStyle: 'none' } as any,
+  textArea: { minHeight: 86, paddingTop: 12, textAlignVertical: 'top' },
   bottomNav: { height: 68, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', width: '100%', maxWidth: 520, alignSelf: 'center' },
   navItem: { alignItems: 'center', minWidth: 48, gap: 4 },
   navText: { color: colors.muted, fontSize: 9, fontWeight: '700' },
