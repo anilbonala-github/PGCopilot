@@ -58,7 +58,7 @@ import {
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
 type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'AI' | 'More';
 type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
-type AiIntent = 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'general';
+type AiIntent = 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'command' | 'general';
 
 type AiAnswer = {
   type: AiIntent;
@@ -79,6 +79,32 @@ type BusinessHealth = {
   warnings: string[];
   recommendation: string;
 };
+
+type AiCommand =
+  | {
+      kind: 'record_payment';
+      title: string;
+      summary: string;
+      tenantName: string;
+      billId?: string;
+      amount: number;
+      paymentMode: PaymentMode;
+      disabledReason?: string;
+    }
+  | {
+      kind: 'add_expense';
+      title: string;
+      summary: string;
+      amount: number;
+      category: ExpenseCategory;
+      disabledReason?: string;
+    }
+  | {
+      kind: 'generate_report' | 'send_reminder' | 'move_tenant' | 'vacate_tenant' | 'open_profile';
+      title: string;
+      summary: string;
+      disabledReason?: string;
+    };
 
 const colors = {
   bg: '#F6F6F1',
@@ -2220,6 +2246,7 @@ function buildBusinessHealth(data: PgMasterData): BusinessHealth {
 
 function detectAiIntent(question: string): AiIntent {
   const text = question.toLowerCase();
+  if (detectAiCommand(question, fallbackData)) return 'command';
   if (text.includes('not paid') || text.includes('pending rent') || text.includes('rent due') || text.includes('unpaid')) return 'pending_rent';
   if (text.includes('vacant') || text.includes('available bed') || text.includes('free bed') || text.includes('available room')) return 'vacant_beds';
   if (text.includes('vacating') || text.includes('leaving') || text.includes('departure') || text.includes('vacate')) return 'vacating_next_month';
@@ -2231,6 +2258,110 @@ function detectAiIntent(question: string): AiIntent {
   if (text.includes('today') || text.includes('work') || text.includes('task')) return 'daily_ops';
   if (text.includes('report') || text.includes('export') || text.includes('pdf') || text.includes('excel')) return 'reports';
   return 'general';
+}
+
+function parseCommandAmount(question: string) {
+  const match = question.replace(/,/g, '').match(/(?:₹|rs\.?|inr)?\s*(\d{2,7})/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function findTenantFromQuestion(question: string, data: PgMasterData) {
+  const text = question.toLowerCase();
+  return data.tenants.find((tenant) => {
+    const name = tenant.name.toLowerCase();
+    const firstName = name.split(/\s+/)[0];
+    return text.includes(name) || text.includes(firstName);
+  });
+}
+
+function categoryFromQuestion(question: string): ExpenseCategory {
+  const text = question.toLowerCase();
+  if (text.includes('food') || text.includes('grocery') || text.includes('rice') || text.includes('vegetable')) return 'Food';
+  if (text.includes('electric')) return 'Electricity';
+  if (text.includes('water')) return 'Water';
+  if (text.includes('internet') || text.includes('wifi')) return 'Internet';
+  if (text.includes('cook') || text.includes('salary')) return 'Cook Salary';
+  if (text.includes('clean')) return 'Cleaning';
+  if (text.includes('maintenance') || text.includes('repair')) return 'Maintenance';
+  return 'Other';
+}
+
+function detectAiCommand(question: string, data: PgMasterData): AiCommand | undefined {
+  const text = question.toLowerCase().trim();
+  const amount = parseCommandAmount(question);
+  const tenant = findTenantFromQuestion(question, data);
+
+  if ((text.includes('add') || text.includes('record')) && (text.includes('payment') || text.includes('rent paid') || text.includes('paid'))) {
+    const bill = tenant ? (data.rentBills ?? []).find((item) => item.tenantId === tenant.id || item.tenantName.toLowerCase() === tenant.name.toLowerCase()) : undefined;
+    return {
+      kind: 'record_payment',
+      title: 'Record rent payment',
+      tenantName: tenant?.name ?? 'Tenant not found',
+      amount,
+      billId: bill?.id,
+      paymentMode: text.includes('cash') ? 'Cash' : text.includes('bank') ? 'Bank Transfer' : 'UPI',
+      summary: tenant && amount ? `Record ${money(amount)} payment from ${tenant.name}.` : 'I need tenant name and amount before recording payment.',
+      disabledReason: !tenant ? 'Tenant not found. Try: Add ₹8500 payment from Rahul.' : !amount ? 'Payment amount missing.' : !bill ? 'No rent bill found for this tenant. Generate monthly rent first.' : undefined,
+    };
+  }
+
+  if ((text.includes('add') || text.includes('record')) && (text.includes('expense') || text.includes('bill') || text.includes('electric') || text.includes('food'))) {
+    const category = categoryFromQuestion(question);
+    return {
+      kind: 'add_expense',
+      title: 'Add expense',
+      amount,
+      category,
+      summary: amount ? `Add ${category} expense of ${money(amount)}.` : `Add ${category} expense.`,
+      disabledReason: !amount ? 'Expense amount missing.' : undefined,
+    };
+  }
+
+  if (text.includes('move') && tenant) {
+    return {
+      kind: 'move_tenant',
+      title: 'Move tenant',
+      summary: `Move ${tenant.name} to another bed.`,
+      disabledReason: 'Move tenant command needs a confirmation workflow with bed selection. This is planned next.',
+    };
+  }
+
+  if (text.includes('vacate') && tenant) {
+    return {
+      kind: 'vacate_tenant',
+      title: 'Vacate tenant',
+      summary: `Start vacate process for ${tenant.name}.`,
+      disabledReason: 'Vacate command requires refund/damage confirmation. Open tenant profile for now.',
+    };
+  }
+
+  if (text.includes('reminder') || text.includes('collect pending')) {
+    return {
+      kind: 'send_reminder',
+      title: 'Create rent reminders',
+      summary: 'Prepare WhatsApp reminders for pending rent tenants.',
+      disabledReason: 'Bulk reminder scheduling is planned. You can send reminders from tenant/rent screens now.',
+    };
+  }
+
+  if (text.includes('report') || text.includes('export')) {
+    return {
+      kind: 'generate_report',
+      title: 'Generate report',
+      summary: 'Open Reports & analytics to export PDF, Excel, or CSV.',
+    };
+  }
+
+  if ((text.includes('open') || text.includes('view')) && tenant) {
+    return {
+      kind: 'open_profile',
+      title: 'Open tenant profile',
+      summary: `Open ${tenant.name}'s tenant profile.`,
+      disabledReason: 'Direct AI navigation to a specific profile is planned. Open Tenants and search this name for now.',
+    };
+  }
+
+  return undefined;
 }
 
 function getPendingRentRows(data: PgMasterData) {
@@ -2293,6 +2424,34 @@ function getTopExpenseCategory(data: PgMasterData) {
 }
 
 function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
+  const command = detectAiCommand(question, data);
+  if (command) {
+    return {
+      type: 'command',
+      title: command.title,
+      answer: command.summary,
+      insight: command.disabledReason
+        ? 'This command needs one more step before it can be saved safely.'
+        : 'I understood this as a write command. I will not save anything until you confirm.',
+      bullets: command.disabledReason
+        ? [command.disabledReason]
+        : ['Review the detected action.', 'Tap Confirm only if the tenant, amount, and action are correct.'],
+      metrics: command.kind === 'record_payment'
+        ? [
+            { label: 'Tenant', value: command.tenantName, tone: 'blue' },
+            { label: 'Amount', value: money(command.amount), tone: 'green' },
+            { label: 'Mode', value: command.paymentMode, tone: 'purple' },
+          ]
+        : command.kind === 'add_expense'
+          ? [
+              { label: 'Category', value: command.category, tone: 'purple' },
+              { label: 'Amount', value: money(command.amount), tone: 'red' },
+            ]
+          : undefined,
+      actions: command.disabledReason ? ['Review manually'] : ['Confirm command', 'Cancel'],
+      source: 'local',
+    };
+  }
   const intent = detectAiIntent(question);
   const summary = buildSummary(data);
   const pendingRows = getPendingRentRows(data);
@@ -2502,7 +2661,17 @@ async function askAiCopilot(question: string, data: PgMasterData): Promise<AiAns
   return localAnswer;
 }
 
-function AICopilot({ data }: { data: PgMasterData }) {
+function AICopilot({
+  data,
+  onRecordPayment,
+  onAddExpense,
+  onNavigate,
+}: {
+  data: PgMasterData;
+  onRecordPayment: (input: RecordRentPaymentInput) => Promise<void>;
+  onAddExpense: (input: NewExpenseInput) => Promise<void>;
+  onNavigate: (tab: Tab) => void;
+}) {
   const suggestions = [
     "Today's work",
     'Who has not paid rent?',
@@ -2538,6 +2707,8 @@ function AICopilot({ data }: { data: PgMasterData }) {
   ];
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState<AiAnswer>(() => buildLocalAiAnswer("Show this month's profit.", data));
+  const [pendingCommand, setPendingCommand] = useState<AiCommand | undefined>();
+  const [commandMessage, setCommandMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
 
   const submitQuestion = async (value = question) => {
@@ -2545,11 +2716,52 @@ function AICopilot({ data }: { data: PgMasterData }) {
     if (!trimmed) return;
     Keyboard.dismiss();
     setQuestion(trimmed);
+    setCommandMessage(undefined);
+    const command = detectAiCommand(trimmed, data);
+    setPendingCommand(command);
     setAnswer(buildLocalAiAnswer(trimmed, data));
+    if (command) return;
     setLoading(true);
     const nextAnswer = await askAiCopilot(trimmed, data);
     setAnswer(nextAnswer);
     setLoading(false);
+  };
+
+  const confirmCommand = async () => {
+    if (!pendingCommand || pendingCommand.disabledReason) return;
+    setLoading(true);
+    setCommandMessage(undefined);
+    try {
+      if (pendingCommand.kind === 'record_payment') {
+        await onRecordPayment({
+          rentPaymentId: pendingCommand.billId!,
+          amount: pendingCommand.amount,
+          paymentMode: pendingCommand.paymentMode,
+          paymentDate: new Date().toISOString().slice(0, 10),
+          notes: 'Recorded from AI Copilot command',
+        });
+        setCommandMessage(`Payment recorded for ${pendingCommand.tenantName}.`);
+      }
+      if (pendingCommand.kind === 'add_expense') {
+        await onAddExpense({
+          amount: pendingCommand.amount,
+          date: new Date().toISOString().slice(0, 10),
+          category: pendingCommand.category,
+          vendor: '',
+          notes: 'Recorded from AI Copilot command',
+        });
+        setCommandMessage(`${pendingCommand.category} expense saved.`);
+      }
+      if (pendingCommand.kind === 'generate_report') {
+        onNavigate('More');
+        setCommandMessage('Open More > Reports & analytics to export reports.');
+      }
+      setPendingCommand(undefined);
+    } catch (error) {
+      setCommandMessage(error instanceof Error ? error.message : 'Unable to complete command.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -2615,6 +2827,29 @@ function AICopilot({ data }: { data: PgMasterData }) {
         ))}
       </ScrollView>
 
+      {pendingCommand ? (
+        <View style={styles.aiCommandCard}>
+          <View style={styles.aiAnswerHeader}>
+            <View>
+              <Text style={styles.cardEyebrow}>COMMAND MODE</Text>
+              <Text style={styles.aiAnswerTitle}>{pendingCommand.title}</Text>
+            </View>
+            <Chip label={pendingCommand.disabledReason ? 'Needs review' : 'Ready'} tone={pendingCommand.disabledReason ? 'orange' : 'green'} />
+          </View>
+          <Text style={styles.aiAnswerText}>{pendingCommand.summary}</Text>
+          {pendingCommand.disabledReason ? <Text style={styles.authError}>{pendingCommand.disabledReason}</Text> : null}
+          <View style={styles.commandButtonRow}>
+            <TouchableOpacity style={[styles.primaryButton, styles.commandButton]} onPress={confirmCommand} disabled={loading || Boolean(pendingCommand.disabledReason)}>
+              <Text style={styles.primaryButtonText}>{loading ? 'Working...' : 'Confirm and save'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.secondaryButton, styles.commandButton]} onPress={() => setPendingCommand(undefined)}>
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+      {commandMessage ? <Text style={styles.inviteMessage}>{commandMessage}</Text> : null}
+
       <View style={styles.aiAnswerCard}>
         <View style={styles.aiAnswerHeader}>
           <View>
@@ -2653,9 +2888,22 @@ function AICopilot({ data }: { data: PgMasterData }) {
       </View>
 
       <SectionTitle title="Smart action cards" />
-      <View style={styles.listCard}>
+      <View style={styles.aiSmartGrid}>
         {(answer.actions ?? []).map((item, index, all) => (
-          <Activity key={item} icon="lightbulb-on-outline" tone="orange" title={item} caption="Suggested by PGCopilot AI" last={index === all.length - 1} />
+          <TouchableOpacity
+            key={item}
+            style={styles.aiSmartAction}
+            onPress={() => {
+              if (item.toLowerCase().includes('rent')) onNavigate('Rent');
+              else if (item.toLowerCase().includes('report')) onNavigate('More');
+              else if (item.toLowerCase().includes('tenant') || item.toLowerCase().includes('document')) onNavigate('Tenants');
+            }}
+          >
+            <View style={[styles.aiSummaryIcon, { backgroundColor: colors.paleOrange }]}>
+              <AppIcon name={index === 0 ? 'flash-outline' : 'lightbulb-on-outline'} size={16} color={colors.orange} />
+            </View>
+            <Text style={styles.aiActionText}>{item}</Text>
+          </TouchableOpacity>
         ))}
       </View>
     </ScrollView>
@@ -3072,7 +3320,7 @@ export default function App() {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
     if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} onUpdateTenant={handleUpdateTenant} onVacateTenant={handleVacateTenant} onRecordPayment={handleRecordPayment} onGenerateRent={handleGenerateRent} />;
     if (tab === 'Rent') return <Rent data={pgData} onGenerateRent={handleGenerateRent} onRecordPayment={handleRecordPayment} />;
-    if (tab === 'AI') return <AICopilot data={pgData} />;
+    if (tab === 'AI') return <AICopilot data={pgData} onRecordPayment={handleRecordPayment} onAddExpense={handleAddExpense} onNavigate={setTab} />;
     if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onAddExpense={handleAddExpense} onNavigate={setTab} onLogout={handleLogout} />;
     return <Dashboard onNavigate={setTab} data={pgData} loading={loadingData} source={dataSource} error={dataError} onSelectHostel={handleSelectHostel} onCreateHostel={handleCreateHostel} />;
   }, [tab, pgData, loadingData, dataSource, dataError]);
@@ -3314,6 +3562,9 @@ const styles = StyleSheet.create({
   aiActionPanel: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 12, marginBottom: 15 },
   aiActionRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, paddingVertical: 7 },
   aiActionText: { flex: 1, color: colors.ink, fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  aiCommandCard: { backgroundColor: '#FFF8EF', borderWidth: 1, borderColor: '#F3D5B5', borderRadius: 18, padding: 16, marginBottom: 15 },
+  commandButtonRow: { flexDirection: 'row', gap: 10, marginTop: 12 },
+  commandButton: { flex: 1, marginTop: 0 },
   aiAskCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 14, marginBottom: 12 },
   aiInputRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8 },
   aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, outlineStyle: 'none' } as any,
@@ -3333,6 +3584,8 @@ const styles = StyleSheet.create({
   aiBulletRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
   aiBulletDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.green, marginTop: 6 },
   aiBulletText: { flex: 1, color: colors.muted, fontSize: 12, lineHeight: 17 },
+  aiSmartGrid: { gap: 9, marginBottom: 24 },
+  aiSmartAction: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 15, padding: 13, flexDirection: 'row', alignItems: 'center', gap: 10 },
   bottomNav: { height: 68, backgroundColor: '#FFF', borderTopWidth: 1, borderTopColor: colors.line, flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', width: '100%', maxWidth: 520, alignSelf: 'center' },
   navItem: { alignItems: 'center', minWidth: 48, gap: 4 },
   navText: { color: colors.muted, fontSize: 9, fontWeight: '700' },

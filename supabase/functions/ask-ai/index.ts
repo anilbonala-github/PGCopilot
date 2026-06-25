@@ -21,6 +21,8 @@ function jsonResponse(body: unknown, status = 200) {
 
 function detectIntent(question: string) {
   const text = question.toLowerCase();
+  if ((text.includes('add') || text.includes('record') || text.includes('move') || text.includes('vacate') || text.includes('create')) &&
+      (text.includes('payment') || text.includes('expense') || text.includes('tenant') || text.includes('reminder') || text.includes('report'))) return 'command';
   if (text.includes('not paid') || text.includes('pending rent') || text.includes('rent due') || text.includes('unpaid')) return 'pending_rent';
   if (text.includes('vacant') || text.includes('available bed') || text.includes('free bed') || text.includes('available room')) return 'vacant_beds';
   if (text.includes('vacating') || text.includes('leaving') || text.includes('departure') || text.includes('vacate')) return 'vacating_next_month';
