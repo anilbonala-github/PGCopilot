@@ -2864,16 +2864,27 @@ function AICopilot({
   onOpenOwnerProfile: () => void;
 }) {
   const suggestions = [
-    "Today's work",
-    'Good morning',
-    'Hello',
     'Who has not paid rent?',
     'Which beds are vacant?',
-    'Who is vacating next month?',
     "Show this month's profit.",
     'Why did profit decrease?',
+    'Who is vacating next month?',
     'Who has missing documents?',
-    'Generate report',
+    'Which tenants are partially paid?',
+    'Show today\'s rent collection.',
+    'Show pending rent by tenant.',
+    'Which rooms have multiple vacant beds?',
+    'Show occupancy report.',
+    'Who joined this month?',
+    'Show this month\'s expenses.',
+    'Which expense category is highest?',
+    'Show food expenses this month.',
+    'Show maintenance beds.',
+    'Generate pending rent report.',
+    'Generate profit and loss report.',
+    'Generate expense summary report.',
+    'What should I follow up today?',
+    'Show business health score.',
   ];
   const summary = buildSummary(data);
   const health = buildBusinessHealth(data);
@@ -2924,11 +2935,12 @@ function AICopilot({
   const [voiceActive, setVoiceActive] = useState(false);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
 
-  const filteredSuggestions = question.trim()
+  const promptSearch = question.trim().toLowerCase();
+  const filteredSuggestions = promptSearch
     ? suggestions
-        .filter((item) => item.toLowerCase().includes(question.trim().toLowerCase()) || question.trim().length >= 3)
-        .slice(0, 4)
-    : suggestions.slice(0, 5);
+        .filter((item) => item.toLowerCase().includes(promptSearch))
+        .slice(0, 20)
+    : suggestions;
 
   const historyStorageKey = `pgcopilot-ai-history-${data.hostelId ?? 'demo'}`;
 
@@ -3329,14 +3341,18 @@ function AICopilot({
       <View style={styles.aiStickyComposer}>
         {promptMenuOpen ? (
           <View style={styles.aiPromptMenu}>
-            {filteredSuggestions.map((item) => (
-              <TouchableOpacity key={item} style={styles.aiPromptMenuItem} onPress={() => submitQuestion(item)}>
-                <View style={[styles.aiPromptIcon, { backgroundColor: colors.paleGreen }]}>
-                  <AppIcon name={item.toLowerCase().includes('bed') ? 'bed-empty' : item.toLowerCase().includes('profit') ? 'chart-bar' : item.toLowerCase().includes('hello') || item.toLowerCase().includes('morning') ? 'hand-wave-outline' : 'cash-multiple'} size={15} color={colors.green} />
-                </View>
-                <Text style={styles.aiPromptMenuText}>{item}</Text>
-              </TouchableOpacity>
-            ))}
+            <ScrollView style={styles.aiPromptMenuScroll} showsVerticalScrollIndicator keyboardShouldPersistTaps="handled">
+              {filteredSuggestions.length ? filteredSuggestions.map((item) => (
+                <TouchableOpacity key={item} style={styles.aiPromptMenuItem} onPress={() => submitQuestion(item)}>
+                  <View style={[styles.aiPromptIcon, { backgroundColor: colors.paleGreen }]}>
+                    <AppIcon name={item.toLowerCase().includes('bed') || item.toLowerCase().includes('room') ? 'bed-empty' : item.toLowerCase().includes('profit') || item.toLowerCase().includes('report') || item.toLowerCase().includes('occupancy') ? 'chart-bar' : item.toLowerCase().includes('expense') || item.toLowerCase().includes('food') ? 'script-text-outline' : item.toLowerCase().includes('document') || item.toLowerCase().includes('joined') || item.toLowerCase().includes('vacating') ? 'account-details-outline' : 'cash-multiple'} size={15} color={colors.green} />
+                  </View>
+                  <Text style={styles.aiPromptMenuText}>{item}</Text>
+                </TouchableOpacity>
+              )) : (
+                <Text style={styles.aiPromptEmptyText}>No matching prompt. You can still ask PGCopilot AI directly.</Text>
+              )}
+            </ScrollView>
           </View>
         ) : null}
         <View style={styles.aiInputRowLarge}>
@@ -4156,8 +4172,10 @@ const styles = StyleSheet.create({
   aiInlineVoiceButtonActive: { backgroundColor: colors.green },
   aiPromptToggleButton: { width: 34, height: 38, borderRadius: 11, backgroundColor: '#F3FAF7', alignItems: 'center', justifyContent: 'center' },
   aiPromptMenu: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 8, marginBottom: 8, gap: 5, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -2 } },
-  aiPromptMenuItem: { minHeight: 42, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, backgroundColor: '#FBFCFA' },
+  aiPromptMenuScroll: { maxHeight: 250 },
+  aiPromptMenuItem: { minHeight: 42, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, marginBottom: 5, backgroundColor: '#FBFCFA' },
   aiPromptMenuText: { flex: 1, color: colors.ink, fontSize: 12, fontWeight: '800' },
+  aiPromptEmptyText: { color: colors.muted, fontSize: 12, fontWeight: '700', lineHeight: 18, padding: 12 },
   aiSuggestionScrollerContent: { gap: 9 },
   aiPromptCard: { width: 118, minHeight: 50, borderRadius: 14, borderWidth: 1, borderColor: colors.line, backgroundColor: '#FFF', padding: 8, flexDirection: 'row', alignItems: 'center', gap: 7 },
   aiPromptIcon: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
