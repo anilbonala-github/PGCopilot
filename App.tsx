@@ -26,6 +26,7 @@ import type { Session } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
 import {
   acceptStaffInvites,
+  adjustRentBillAmount as saveRentBillAdjustment,
   buildSummary,
   createOwnerHostel,
   createExpense as saveExpense,
@@ -38,6 +39,7 @@ import {
   updateTenant as saveTenantUpdate,
   vacateTenant as saveTenantVacate,
   type HostelSetupInput,
+  type AdjustRentBillAmountInput,
   type ExpenseCategory,
   type NewTenantInput,
   type NewExpenseInput,
@@ -631,6 +633,7 @@ function Tenants({
   onVacateTenant,
   onRecordPayment,
   onGenerateRent,
+  onAdjustRentBill,
 }: {
   data: PgMasterData;
   onAddTenant: (input: NewTenantInput) => Promise<void>;
@@ -638,6 +641,7 @@ function Tenants({
   onVacateTenant: (input: VacateTenantInput) => Promise<void>;
   onRecordPayment: (input: RecordRentPaymentInput) => Promise<void>;
   onGenerateRent: () => Promise<void>;
+  onAdjustRentBill: (input: AdjustRentBillAmountInput) => Promise<void>;
 }) {
   const [modal, setModal] = useState(false);
   const [query, setQuery] = useState('');
@@ -671,6 +675,7 @@ function Tenants({
         onVacateTenant={onVacateTenant}
         onRecordPayment={onRecordPayment}
         onGenerateRent={onGenerateRent}
+        onAdjustRentBill={onAdjustRentBill}
       />
     );
   }
@@ -1280,6 +1285,7 @@ function TenantDetail({
   onVacateTenant,
   onRecordPayment,
   onGenerateRent,
+  onAdjustRentBill,
 }: {
   tenant: Tenant;
   data: PgMasterData;
@@ -1288,6 +1294,7 @@ function TenantDetail({
   onVacateTenant: (input: VacateTenantInput) => Promise<void>;
   onRecordPayment: (input: RecordRentPaymentInput) => Promise<void>;
   onGenerateRent: () => Promise<void>;
+  onAdjustRentBill: (input: AdjustRentBillAmountInput) => Promise<void>;
 }) {
   const [editOpen, setEditOpen] = useState(false);
   const [vacateOpen, setVacateOpen] = useState(false);
@@ -1295,9 +1302,11 @@ function TenantDetail({
   const [previewPhoto, setPreviewPhoto] = useState<string | undefined>();
   const [previewDocument, setPreviewDocument] = useState<TenantDocument | undefined>();
   const [message, setMessage] = useState<string | undefined>();
+  const [adjustingBill, setAdjustingBill] = useState(false);
   const tenantBills = (data.rentBills ?? []).filter((bill) => bill.tenantId === tenant.id);
   const currentBill = tenantBills[0];
   const pendingRent = currentBill?.pendingAmount ?? (tenant.status === 'Paid' ? 0 : tenant.rent);
+  const rentBillMismatch = Boolean(currentBill && tenant.rent !== currentBill.amount);
   const tenantActivities = (data.tenantActivities ?? []).filter((activity) => activity.tenantId === tenant.id);
 
   const openWhatsApp = (template: 'rent' | 'pending' | 'paid') => {
@@ -1315,6 +1324,24 @@ function TenantDetail({
     setMessage(undefined);
     await onGenerateRent();
     setMessage('Rent bill generated. Reopen tenant if it does not appear immediately.');
+  };
+
+  const handleAdjustCurrentBill = async () => {
+    if (!currentBill) return;
+    setAdjustingBill(true);
+    setMessage(undefined);
+    try {
+      await onAdjustRentBill({
+        rentPaymentId: currentBill.id,
+        amount: tenant.rent,
+        notes: `Adjusted to current monthly rent ${money(tenant.rent)}`,
+      });
+      setMessage(`Current bill updated to ${money(tenant.rent)}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to update current rent bill.');
+    } finally {
+      setAdjustingBill(false);
+    }
   };
 
   return (
@@ -1366,6 +1393,14 @@ function TenantDetail({
         <View style={styles.rentHero}>
           <Text style={styles.cardEyebrow}>EXPECTED RENT</Text>
           <Text style={styles.rentHeroValue}>{money(currentBill?.amount ?? tenant.rent)}</Text>
+          {rentBillMismatch ? (
+            <View style={styles.rentMismatchBox}>
+              <Text style={styles.rentMismatchText}>Tenant monthly rent is now {money(tenant.rent)}, but this generated bill is still {money(currentBill?.amount ?? 0)}.</Text>
+              <TouchableOpacity style={styles.rentMismatchButton} onPress={handleAdjustCurrentBill} disabled={adjustingBill}>
+                <Text style={styles.rentMismatchButtonText}>{adjustingBill ? 'Updating...' : `Update this bill to ${money(tenant.rent)}`}</Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
           <View style={styles.rentHeroBottom}><Text style={styles.rentHeroCaption}>Paid {money(currentBill?.paidAmount ?? 0)}</Text><Text style={styles.rentHeroPending}>Pending {money(pendingRent)}</Text></View>
           <View style={styles.detailButtonRow}>
             {currentBill ? <TouchableOpacity style={[styles.secondaryButton, styles.rentHeroActionButton]} onPress={() => setPaymentOpen(true)}><Text style={styles.rentHeroActionText}>Add payment</Text></TouchableOpacity> : <TouchableOpacity style={[styles.secondaryButton, styles.rentHeroActionButton]} onPress={handleGenerateRent}><Text style={styles.rentHeroActionText}>Generate rent bill</Text></TouchableOpacity>}
@@ -3665,6 +3700,12 @@ export default function App() {
     setDataError(undefined);
   };
 
+  const handleAdjustRentBill = async (input: AdjustRentBillAmountInput) => {
+    const nextData = await saveRentBillAdjustment(input, pgData);
+    setPgData(nextData);
+    setDataError(undefined);
+  };
+
   const handleAddExpense = async (input: NewExpenseInput) => {
     const nextData = await saveExpense(input, pgData);
     setPgData(nextData);
@@ -3679,7 +3720,7 @@ export default function App() {
 
   const content = useMemo(() => {
     if (tab === 'Rooms') return <Rooms data={pgData} />;
-    if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} onUpdateTenant={handleUpdateTenant} onVacateTenant={handleVacateTenant} onRecordPayment={handleRecordPayment} onGenerateRent={handleGenerateRent} />;
+    if (tab === 'Tenants') return <Tenants data={pgData} onAddTenant={handleAddTenant} onUpdateTenant={handleUpdateTenant} onVacateTenant={handleVacateTenant} onRecordPayment={handleRecordPayment} onGenerateRent={handleGenerateRent} onAdjustRentBill={handleAdjustRentBill} />;
     if (tab === 'Rent') return <Rent data={pgData} onGenerateRent={handleGenerateRent} onRecordPayment={handleRecordPayment} />;
     if (tab === 'AI') return <AICopilot data={pgData} ownerProfile={ownerProfile} onRecordPayment={handleRecordPayment} onAddExpense={handleAddExpense} onNavigate={setTab} onOpenOwnerProfile={() => setOwnerProfileOpen(true)} />;
     if (tab === 'More') return <More data={pgData} onInviteStaff={handleInviteStaff} onAddExpense={handleAddExpense} onNavigate={setTab} onLogout={handleLogout} />;
@@ -3869,6 +3910,10 @@ const styles = StyleSheet.create({
   documentTitle: { color: colors.ink, fontSize: 12, fontWeight: '800' },
   rentHero: { backgroundColor: colors.ink, padding: 18, borderRadius: 16, marginBottom: 15 },
   rentHeroValue: { color: '#FFF', fontSize: 29, fontWeight: '800', marginTop: 8 },
+  rentMismatchBox: { marginTop: 12, backgroundColor: 'rgba(255,255,255,0.08)', borderWidth: 1, borderColor: 'rgba(255,255,255,0.16)', borderRadius: 13, padding: 11 },
+  rentMismatchText: { color: '#EAF3EF', fontSize: 11.5, lineHeight: 17, fontWeight: '700' },
+  rentMismatchButton: { marginTop: 9, backgroundColor: '#FFFFFF', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 10, alignItems: 'center' },
+  rentMismatchButtonText: { color: colors.green, fontSize: 12, fontWeight: '900' },
   rentHeroBottom: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
   rentHeroCaption: { color: '#AAB8B4', fontSize: 11 },
   rentHeroPending: { color: '#F0A25B', fontSize: 11, fontWeight: '700' },

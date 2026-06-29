@@ -170,6 +170,12 @@ export type RecordRentPaymentInput = {
   notes?: string;
 };
 
+export type AdjustRentBillAmountInput = {
+  rentPaymentId: string;
+  amount: number;
+  notes?: string;
+};
+
 export type UpdateTenantInput = Omit<NewTenantInput, 'documents'> & {
   id: string;
   documents?: TenantDocumentInput[];
@@ -958,6 +964,64 @@ export async function recordRentPayment(input: RecordRentPaymentInput, currentDa
   if (error) throw new Error(error.message);
   const refreshed = await loadPgMasterData(currentData.hostelId);
   return { data: refreshed.data, receipt: receipt as any };
+}
+
+export async function adjustRentBillAmount(input: AdjustRentBillAmountInput, currentData: PgMasterData) {
+  const currentBill = currentData.rentBills?.find((bill) => bill.id === input.rentPaymentId);
+  if (!currentBill) throw new Error('Rent bill not found.');
+  if (input.amount < currentBill.paidAmount) {
+    throw new Error(`Bill amount cannot be less than already paid amount ${currentBill.paidAmount}.`);
+  }
+
+  const nextStatus: RentStatus = currentBill.paidAmount >= input.amount
+    ? 'Paid'
+    : currentBill.paidAmount > 0
+      ? 'Partial'
+      : 'Pending';
+
+  if (!isSupabaseConfigured || !supabase || !currentData.hostelId) {
+    return {
+      ...currentData,
+      rentBills: currentData.rentBills?.map((bill) => bill.id === input.rentPaymentId ? {
+        ...bill,
+        amount: input.amount,
+        pendingAmount: Math.max(input.amount - bill.paidAmount, 0),
+        status: nextStatus,
+        notes: input.notes,
+      } : bill),
+    };
+  }
+
+  const userId = await currentUserId();
+  const { error } = await supabase
+    .from('rent_payments')
+    .update({
+      amount: input.amount,
+      status: nextStatus,
+      notes: input.notes || null,
+    })
+    .eq('id', input.rentPaymentId)
+    .eq('hostel_id', currentData.hostelId);
+
+  if (error) throw new Error(error.message);
+
+  await supabase
+    .from('tenants')
+    .update({ rent_status: nextStatus })
+    .eq('id', currentBill.tenantId)
+    .eq('hostel_id', currentData.hostelId);
+
+  await supabase.from('tenant_activity').insert({
+    owner_id: currentData.ownerId,
+    hostel_id: currentData.hostelId,
+    created_by: userId,
+    tenant_id: currentBill.tenantId,
+    activity_type: 'tenant_update',
+    description: `Rent bill adjusted for ${currentBill.rentMonth}: ${input.amount}`,
+  });
+
+  const refreshed = await loadPgMasterData(currentData.hostelId);
+  return refreshed.data;
 }
 
 export async function createExpense(input: NewExpenseInput, currentData: PgMasterData) {
