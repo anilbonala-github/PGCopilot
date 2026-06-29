@@ -2359,16 +2359,60 @@ function parseCommandAmount(question: string) {
   return match ? Number(match[1]) : 0;
 }
 
-function findTenantFromQuestion(question: string, data: PgMasterData) {
-  const text = question.toLowerCase();
-  return data.tenants.find((tenant) => {
-    const name = tenant.name.toLowerCase();
-    const firstName = name.split(/\s+/)[0];
-    return text.includes(name) || text.includes(firstName);
+function normalizeLookupText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function uniqueTenants(tenants: Tenant[]) {
+  const seen = new Set<string>();
+  return tenants.filter((tenant) => {
+    const key = tenant.id ?? `${tenant.name}-${tenant.mobile}-${tenant.room}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 
+function describeTenantForClarification(tenant: Tenant) {
+  return `${tenant.name} - Room ${tenant.room}${tenant.mobile ? `, Mobile ${tenant.mobile}` : ''}`;
+}
+
+function findTenantMatchesFromQuestion(question: string, data: PgMasterData) {
+  const normalizedQuestion = normalizeLookupText(question);
+  const digitGroups = question.match(/\d{4,15}/g) ?? [];
+  const roomToken = findRoomTokenFromQuestion(question);
+  const activeTenants = data.tenants.filter((tenant) => tenant.admissionStatus !== 'Vacated');
+
+  const mobileMatches = activeTenants.filter((tenant) => {
+    const tenantMobile = tenant.mobile.replace(/\D/g, '');
+    return digitGroups.some((digits) => tenantMobile.includes(digits) || digits.includes(tenantMobile));
+  });
+  if (mobileMatches.length) return uniqueTenants(mobileMatches);
+
+  if (roomToken) {
+    const normalizedRoom = normalizeLookupText(roomToken);
+    const roomMatches = activeTenants.filter((tenant) => normalizeLookupText(tenant.room).includes(normalizedRoom));
+    if (roomMatches.length) return uniqueTenants(roomMatches);
+  }
+
+  const fullNameMatches = activeTenants.filter((tenant) => normalizedQuestion.includes(normalizeLookupText(tenant.name)));
+  if (fullNameMatches.length) return uniqueTenants(fullNameMatches);
+
+  const firstNameMatches = activeTenants.filter((tenant) => {
+    const firstName = normalizeLookupText(tenant.name.split(/\s+/)[0] ?? '');
+    return firstName.length >= 3 && normalizedQuestion.includes(firstName);
+  });
+  return uniqueTenants(firstNameMatches);
+}
+
+function findTenantFromQuestion(question: string, data: PgMasterData) {
+  const matches = findTenantMatchesFromQuestion(question, data);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 function findRoomTokenFromQuestion(question: string) {
+  const explicitMatch = question.toUpperCase().match(/\b(?:ROOM|BED)\s+(\d{2,4}\s*[-/]?\s*[A-Z]?)\b/);
+  if (explicitMatch?.[1]) return explicitMatch[1].replace(/\s+/g, '');
   const match = question.toUpperCase().match(/\b(\d{2,4}\s*[-/]?\s*[A-Z]?)\b/);
   return match?.[1]?.replace(/\s+/g, '');
 }
@@ -2408,7 +2452,11 @@ function categoryFromQuestion(question: string): ExpenseCategory {
 function detectAiCommand(question: string, data: PgMasterData): AiCommand | undefined {
   const text = question.toLowerCase().trim();
   const amount = parseCommandAmount(question);
-  const tenant = findTenantFromQuestion(question, data);
+  const tenantMatches = findTenantMatchesFromQuestion(question, data);
+  const tenant = tenantMatches.length === 1 ? tenantMatches[0] : undefined;
+  const ambiguousTenantReason = tenantMatches.length > 1
+    ? `I found multiple matching tenants: ${tenantMatches.map(describeTenantForClarification).join('; ')}. Please include full name, room/bed, or mobile number. Example: add Ramesh S rent 3000 or add rent 3000 for room 101-A.`
+    : undefined;
   const wantsPaymentUpdate = text.includes('payment')
     || text.includes('rent paid')
     || text.includes('paid')
@@ -2424,12 +2472,16 @@ function detectAiCommand(question: string, data: PgMasterData): AiCommand | unde
     return {
       kind: 'record_payment',
       title: 'Record rent payment',
-      tenantName: tenant?.name ?? 'Tenant not found',
+      tenantName: ambiguousTenantReason ? 'Multiple tenants matched' : tenant?.name ?? 'Tenant not found',
       amount: paymentAmount,
       billId: bill?.id,
       paymentMode: text.includes('cash') ? 'Cash' : text.includes('bank') ? 'Bank Transfer' : 'UPI',
-      summary: tenant && paymentAmount ? `Record ${money(paymentAmount)} payment from ${tenant.name}.` : 'I need tenant name and amount before recording payment.',
-      disabledReason: !tenant ? 'Tenant not found. Try: Update John N rent 8000 as paid.' : !paymentAmount ? 'Payment amount missing.' : !bill ? 'No rent bill found for this tenant. Generate monthly rent first.' : bill.status === 'Paid' ? 'This rent bill is already marked paid.' : undefined,
+      summary: ambiguousTenantReason
+        ? 'I need you to choose the exact tenant before recording this rent payment.'
+        : tenant && paymentAmount
+          ? `Record ${money(paymentAmount)} payment from ${tenant.name}.`
+          : 'I need tenant name and amount before recording payment.',
+      disabledReason: ambiguousTenantReason ?? (!tenant ? 'Tenant not found. Try: Update John N rent 8000 as paid.' : !paymentAmount ? 'Payment amount missing.' : !bill ? 'No rent bill found for this tenant. Generate monthly rent first.' : bill.status === 'Paid' ? 'This rent bill is already marked paid.' : undefined),
     };
   }
 
