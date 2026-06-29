@@ -2405,7 +2405,8 @@ function detectAiCommand(question: string, data: PgMasterData): AiCommand | unde
     || text.includes('mark paid')
     || text.includes('as paid')
     || text.includes('update rent')
-    || text.includes('rent status');
+    || text.includes('rent status')
+    || /\brent\s+(of\s+)?\d/i.test(text);
 
   if ((text.includes('add') || text.includes('record') || text.includes('update') || text.includes('mark') || text.includes('set')) && wantsPaymentUpdate) {
     const bill = findRentBillForTenant(tenant, data);
