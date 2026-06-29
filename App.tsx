@@ -18,6 +18,7 @@ import {
   View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -175,10 +176,19 @@ const greetingForTime = () => {
   return 'Good evening';
 };
 
-const formatChatTime = (date: Date) =>
-  date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
+const formatChatDateTime = (date: Date) =>
+  date.toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: 'numeric', minute: '2-digit' });
 
 const newAiMessageId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const aiHistoryRetentionDays = 30;
+
+function pruneAiHistory(messages: AiChatMessage[]) {
+  const oldestAllowed = Date.now() - aiHistoryRetentionDays * 24 * 60 * 60 * 1000;
+  return messages
+    .filter((message) => message.createdAt.getTime() >= oldestAllowed)
+    .slice(-120);
+}
 
 function AppIcon({ name, size = 20, color = colors.green }: { name: IconName; size?: number; color?: string }) {
   return <MaterialCommunityIcons name={name} size={size} color={color} />;
@@ -2906,6 +2916,7 @@ function AICopilot({
       createdAt: new Date(),
     }];
   });
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [pendingCommand, setPendingCommand] = useState<AiCommand | undefined>();
   const [commandMessage, setCommandMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
@@ -2917,6 +2928,39 @@ function AICopilot({
         .filter((item) => item.toLowerCase().includes(question.trim().toLowerCase()) || question.trim().length >= 3)
         .slice(0, 4)
     : suggestions.slice(0, 5);
+
+  const historyStorageKey = `pgcopilot-ai-history-${data.hostelId ?? 'demo'}`;
+
+  useEffect(() => {
+    let active = true;
+    setHistoryLoaded(false);
+    AsyncStorage.getItem(historyStorageKey)
+      .then((stored) => {
+        if (!active) return;
+        if (stored) {
+          const parsed = JSON.parse(stored) as Array<Omit<AiChatMessage, 'createdAt'> & { createdAt: string }>;
+          const restored = pruneAiHistory(parsed.map((message) => ({
+            ...message,
+            createdAt: new Date(message.createdAt),
+          })));
+          if (restored.length) {
+            setHistory(restored);
+          }
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setHistoryLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [historyStorageKey]);
+
+  useEffect(() => {
+    if (!historyLoaded) return;
+    AsyncStorage.setItem(historyStorageKey, JSON.stringify(pruneAiHistory(history))).catch(() => undefined);
+  }, [history, historyLoaded, historyStorageKey]);
 
   const startVoiceInput = () => {
     Keyboard.dismiss();
@@ -3139,12 +3183,26 @@ function AICopilot({
       </View>
 
       <View style={styles.aiChatHistory}>
-        <Text style={styles.sectionTitle}>Copilot history</Text>
+        <View style={styles.aiHistoryHeader}>
+          <View>
+            <Text style={styles.sectionTitle}>Copilot history</Text>
+            <Text style={styles.aiHistoryCaption}>Saved for {aiHistoryRetentionDays} days on this device</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.aiHistoryClearButton}
+            onPress={() => {
+              setHistory([]);
+              AsyncStorage.removeItem(historyStorageKey).catch(() => undefined);
+            }}
+          >
+            <Text style={styles.aiHistoryClearText}>Clear</Text>
+          </TouchableOpacity>
+        </View>
         {history.map((message) => message.role === 'owner' ? (
           <View key={message.id} style={styles.aiUserMessageRow}>
             <View style={styles.aiUserBubble}>
               <Text style={styles.aiUserBubbleText}>{message.text}</Text>
-              <Text style={styles.aiBubbleTime}>{formatChatTime(message.createdAt)}</Text>
+              <Text style={styles.aiBubbleTime}>{formatChatDateTime(message.createdAt)}</Text>
               <AppIcon name="check-all" size={15} color={colors.green} />
             </View>
             <OwnerAvatarButton profile={ownerProfile} size={34} onPress={onOpenOwnerProfile} />
@@ -3154,7 +3212,7 @@ function AICopilot({
             <View style={styles.aiAssistantLabel}>
               <View style={styles.aiAssistantIcon}><AppIcon name="robot-outline" size={16} color="#FFF" /></View>
               <Text style={styles.aiAssistantName}>PGCopilot AI</Text>
-              <Text style={styles.aiBubbleTime}>{formatChatTime(message.createdAt)}</Text>
+              <Text style={styles.aiBubbleTime}>{formatChatDateTime(message.createdAt)}</Text>
             </View>
             {message.answer ? renderAnswerCard(message.answer) : <Text style={styles.aiAnswerText}>{message.text}</Text>}
           </View>
@@ -4023,6 +4081,10 @@ const styles = StyleSheet.create({
   aiPromptIcon: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   aiPromptText: { flex: 1, color: colors.ink, fontSize: 10.5, fontWeight: '800', lineHeight: 14 },
   aiChatHistory: { backgroundColor: '#FBFCFA', borderRadius: 20, borderWidth: 1, borderColor: colors.line, padding: 12, marginBottom: 16, gap: 10 },
+  aiHistoryHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  aiHistoryCaption: { color: colors.muted, fontSize: 10.5, fontWeight: '700', marginTop: 3 },
+  aiHistoryClearButton: { borderWidth: 1, borderColor: '#BFE6D8', borderRadius: 11, paddingHorizontal: 10, paddingVertical: 7, backgroundColor: '#FFF' },
+  aiHistoryClearText: { color: colors.green, fontSize: 11, fontWeight: '900' },
   aiUserMessageRow: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', gap: 8, marginTop: 4 },
   aiUserBubble: { alignSelf: 'flex-end', maxWidth: '86%', backgroundColor: '#E6F7EC', borderRadius: 16, padding: 12, marginBottom: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
   aiUserBubbleText: { color: colors.ink, fontSize: 13, fontWeight: '700' },
