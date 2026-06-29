@@ -2920,6 +2920,7 @@ function AICopilot({
   const [pendingCommand, setPendingCommand] = useState<AiCommand | undefined>();
   const [commandMessage, setCommandMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
+  const [typingMessageId, setTypingMessageId] = useState<string | undefined>();
   const [voiceActive, setVoiceActive] = useState(false);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
 
@@ -2958,9 +2959,71 @@ function AICopilot({
   }, [historyStorageKey]);
 
   useEffect(() => {
-    if (!historyLoaded) return;
+    if (!historyLoaded || typingMessageId) return;
     AsyncStorage.setItem(historyStorageKey, JSON.stringify(pruneAiHistory(history))).catch(() => undefined);
-  }, [history, historyLoaded, historyStorageKey]);
+  }, [history, historyLoaded, historyStorageKey, typingMessageId]);
+
+  const openAnswerDetails = (itemAnswer: AiAnswer) => {
+    const type = itemAnswer.type;
+    if (type === 'pending_rent' || type === 'command') {
+      onNavigate('Rent');
+      return;
+    }
+    if (type === 'vacant_beds' || type === 'room_lookup') {
+      onNavigate('Rooms');
+      return;
+    }
+    if (type === 'vacating_next_month' || type === 'new_admissions' || type === 'documents') {
+      onNavigate('Tenants');
+      return;
+    }
+    if (type === 'profit' || type === 'profit_decrease' || type === 'expense_analysis' || type === 'reports') {
+      onNavigate('More');
+      return;
+    }
+    onNavigate('Home');
+  };
+
+  const streamAssistantAnswer = async (nextAnswer: AiAnswer, existingMessageId?: string) => {
+    const messageId = existingMessageId ?? newAiMessageId();
+    const createdAt = new Date();
+    const emptyAnswer = { ...nextAnswer, answer: '' };
+    setTypingMessageId(messageId);
+    if (existingMessageId) {
+      setHistory((current) => current.map((message) =>
+        message.id === messageId
+          ? { ...message, text: '', answer: emptyAnswer }
+          : message
+      ));
+    } else {
+      setHistory((current) => [...current, {
+        id: messageId,
+        role: 'assistant',
+        text: '',
+        answer: emptyAnswer,
+        createdAt,
+      }]);
+    }
+
+    const tokens = nextAnswer.answer.split(/(\s+)/).filter(Boolean);
+    let visibleText = '';
+    for (const token of tokens) {
+      visibleText += token;
+      await new Promise<void>((resolve) => setTimeout(resolve, token.trim() ? 28 : 6));
+      setHistory((current) => current.map((message) =>
+        message.id === messageId && message.answer
+          ? { ...message, text: visibleText, answer: { ...message.answer, answer: visibleText } }
+          : message
+      ));
+    }
+
+    setHistory((current) => current.map((message) =>
+      message.id === messageId
+        ? { ...message, text: nextAnswer.answer, answer: nextAnswer }
+        : message
+    ));
+    setTypingMessageId(undefined);
+  };
 
   const startVoiceInput = () => {
     Keyboard.dismiss();
@@ -3002,26 +3065,32 @@ function AICopilot({
     const localAnswer = buildLocalAiAnswer(trimmed, data);
     setAnswer(localAnswer);
     if (command) {
-      setHistory((current) => [...current, {
-        id: newAiMessageId(),
-        role: 'assistant',
-        text: localAnswer.answer,
-        answer: localAnswer,
-        createdAt: new Date(),
-      }]);
+      await streamAssistantAnswer(localAnswer);
       return;
     }
     setLoading(true);
-    const nextAnswer = await askAiCopilot(trimmed, data);
-    setAnswer(nextAnswer);
+    const assistantMessageId = newAiMessageId();
+    setTypingMessageId(assistantMessageId);
     setHistory((current) => [...current, {
-      id: newAiMessageId(),
+      id: assistantMessageId,
       role: 'assistant',
-      text: nextAnswer.answer,
-      answer: nextAnswer,
+      text: '',
+      answer: {
+        type: 'general',
+        title: 'Thinking...',
+        answer: '',
+        bullets: [],
+        source: 'local',
+      },
       createdAt: new Date(),
     }]);
-    setLoading(false);
+    try {
+      const nextAnswer = await askAiCopilot(trimmed, data);
+      setAnswer(nextAnswer);
+      await streamAssistantAnswer(nextAnswer, assistantMessageId);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const confirmCommand = async () => {
@@ -3061,19 +3130,31 @@ function AICopilot({
     }
   };
 
-  const renderAnswerCard = (itemAnswer: AiAnswer) => (
+  const renderAnswerCard = (itemAnswer: AiAnswer, messageId?: string) => {
+    const isTyping = messageId === typingMessageId;
+    const answerText = itemAnswer.answer ? `${itemAnswer.answer}${isTyping ? ' |' : ''}` : '';
+    return (
     <View style={styles.aiAnswerCard}>
       <View style={styles.aiAnswerHeader}>
         <View style={styles.flex}>
           <Text style={styles.cardEyebrow}>{itemAnswer.source === 'gemini' ? 'GEMINI ASSISTED' : 'PGCOPILOT AI'}</Text>
           <Text style={styles.aiAnswerTitle}>{itemAnswer.title}</Text>
         </View>
-        <TouchableOpacity style={styles.aiDetailsButton} onPress={() => itemAnswer.type === 'pending_rent' ? onNavigate('Rent') : undefined}>
+        <TouchableOpacity style={styles.aiDetailsButton} onPress={() => openAnswerDetails(itemAnswer)}>
           <Text style={styles.aiDetailsText}>View details</Text>
         </TouchableOpacity>
       </View>
-      <Text style={styles.aiAnswerText}>{itemAnswer.answer}</Text>
-      {itemAnswer.metrics?.length ? (
+      {answerText ? (
+        <Text style={styles.aiAnswerText}>{answerText}</Text>
+      ) : isTyping ? (
+        <View style={styles.aiThinkingRow}>
+          <View style={styles.aiThinkingDot} />
+          <View style={styles.aiThinkingDot} />
+          <View style={styles.aiThinkingDot} />
+          <Text style={styles.aiThinkingText}>PGCopilot AI is thinking...</Text>
+        </View>
+      ) : null}
+      {!isTyping && itemAnswer.metrics?.length ? (
         <View style={styles.aiMetricRow}>
           {itemAnswer.metrics.map((item) => (
             <View key={`${itemAnswer.title}-${item.label}`} style={styles.aiMetricCard}>
@@ -3083,7 +3164,7 @@ function AICopilot({
           ))}
         </View>
       ) : null}
-      {itemAnswer.type === 'pending_rent' && pendingRows.length ? (
+      {!isTyping && itemAnswer.type === 'pending_rent' && pendingRows.length ? (
         <View style={styles.aiTable}>
           <View style={styles.aiTableHeader}><Text style={styles.aiTableHeadTenant}>Tenant</Text><Text style={styles.aiTableHead}>Room</Text><Text style={styles.aiTableHead}>Pending</Text></View>
           {pendingRows.slice(0, 4).map((item) => (
@@ -3094,7 +3175,7 @@ function AICopilot({
             </View>
           ))}
         </View>
-      ) : itemAnswer.bullets.length ? (
+      ) : !isTyping && itemAnswer.bullets.length ? (
         <View style={styles.aiBulletList}>
           {itemAnswer.bullets.map((item) => (
             <View key={`${itemAnswer.title}-${item}`} style={styles.aiBulletRow}>
@@ -3104,7 +3185,7 @@ function AICopilot({
           ))}
         </View>
       ) : null}
-      {itemAnswer.actions?.length ? (
+      {!isTyping && itemAnswer.actions?.length ? (
         <View style={styles.aiSmartGrid}>
           {itemAnswer.actions.map((item, index) => (
             <TouchableOpacity
@@ -3125,13 +3206,14 @@ function AICopilot({
           ))}
         </View>
       ) : null}
-      {itemAnswer.insight ? (
+      {!isTyping && itemAnswer.insight ? (
         <View style={styles.aiInsightRecommendationRow}>
           <View style={styles.aiInsightBox}><AppIcon name="lightbulb-on-outline" size={18} color={colors.orange} /><Text style={styles.aiInsightBoxText}>{itemAnswer.insight}</Text></View>
         </View>
       ) : null}
     </View>
   );
+  };
 
   return (
     <View style={styles.aiScreen}>
@@ -3214,7 +3296,7 @@ function AICopilot({
               <Text style={styles.aiAssistantName}>PGCopilot AI</Text>
               <Text style={styles.aiBubbleTime}>{formatChatDateTime(message.createdAt)}</Text>
             </View>
-            {message.answer ? renderAnswerCard(message.answer) : <Text style={styles.aiAnswerText}>{message.text}</Text>}
+            {message.answer ? renderAnswerCard(message.answer, message.id) : <Text style={styles.aiAnswerText}>{message.text}</Text>}
           </View>
         ))}
 
@@ -4099,6 +4181,9 @@ const styles = StyleSheet.create({
   aiDetailsText: { color: colors.green, fontSize: 11, fontWeight: '900' },
   aiSectionLabel: { color: colors.green, fontSize: 10, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 },
   aiAnswerText: { color: colors.ink, fontSize: 13, lineHeight: 20 },
+  aiThinkingRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
+  aiThinkingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green, opacity: 0.65 },
+  aiThinkingText: { color: colors.muted, fontSize: 12, fontWeight: '700', marginLeft: 4 },
   aiMetricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 14 },
   aiMetricCard: { flexGrow: 1, flexBasis: '30%', minWidth: 92, backgroundColor: colors.bg, borderRadius: 12, padding: 9 },
   aiMetricValue: { fontSize: 15, fontWeight: '900' },
