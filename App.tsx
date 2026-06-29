@@ -58,7 +58,7 @@ import {
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
 type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'AI' | 'More';
 type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
-type AiIntent = 'greeting' | 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'command' | 'general';
+type AiIntent = 'greeting' | 'room_lookup' | 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'command' | 'general';
 
 type AiAnswer = {
   type: AiIntent;
@@ -2295,6 +2295,7 @@ function detectAiIntent(question: string): AiIntent {
   const compact = text.trim().replace(/[.!?]+$/g, '');
   if (detectAiCommand(question, fallbackData)) return 'command';
   if (['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'gm'].includes(compact) || compact.includes('what would you like to do')) return 'greeting';
+  if ((text.includes('who') || text.includes('tenant') || text.includes('person') || text.includes('resident')) && text.includes('room')) return 'room_lookup';
   if (text.includes('not paid') || text.includes('pending rent') || text.includes('rent due') || text.includes('unpaid')) return 'pending_rent';
   if (text.includes('vacant') || text.includes('available bed') || text.includes('free bed') || text.includes('available room')) return 'vacant_beds';
   if (text.includes('vacating') || text.includes('leaving') || text.includes('departure') || text.includes('vacate')) return 'vacating_next_month';
@@ -2322,6 +2323,31 @@ function findTenantFromQuestion(question: string, data: PgMasterData) {
   });
 }
 
+function findRoomTokenFromQuestion(question: string) {
+  const match = question.toUpperCase().match(/\b(\d{2,4}\s*[-/]?\s*[A-Z]?)\b/);
+  return match?.[1]?.replace(/\s+/g, '');
+}
+
+function findTenantByRoomQuestion(question: string, data: PgMasterData) {
+  const roomToken = findRoomTokenFromQuestion(question);
+  if (!roomToken) return undefined;
+  const normalizedRoom = roomToken.toLowerCase();
+  return data.tenants.find((tenant) =>
+    tenant.admissionStatus !== 'Vacated'
+    && tenant.room.replace(/\s+/g, '').toLowerCase().includes(normalizedRoom)
+  );
+}
+
+function findRentBillForTenant(tenant: Tenant | undefined, data: PgMasterData) {
+  if (!tenant) return undefined;
+  const bills = data.rentBills ?? [];
+  return bills.find((item) =>
+    (item.tenantId === tenant.id || item.tenantName.toLowerCase() === tenant.name.toLowerCase())
+    && item.status !== 'Paid'
+    && item.pendingAmount > 0
+  ) ?? bills.find((item) => item.tenantId === tenant.id || item.tenantName.toLowerCase() === tenant.name.toLowerCase());
+}
+
 function categoryFromQuestion(question: string): ExpenseCategory {
   const text = question.toLowerCase();
   if (text.includes('food') || text.includes('grocery') || text.includes('rice') || text.includes('vegetable')) return 'Food';
@@ -2338,18 +2364,26 @@ function detectAiCommand(question: string, data: PgMasterData): AiCommand | unde
   const text = question.toLowerCase().trim();
   const amount = parseCommandAmount(question);
   const tenant = findTenantFromQuestion(question, data);
+  const wantsPaymentUpdate = text.includes('payment')
+    || text.includes('rent paid')
+    || text.includes('paid')
+    || text.includes('mark paid')
+    || text.includes('as paid')
+    || text.includes('update rent')
+    || text.includes('rent status');
 
-  if ((text.includes('add') || text.includes('record')) && (text.includes('payment') || text.includes('rent paid') || text.includes('paid'))) {
-    const bill = tenant ? (data.rentBills ?? []).find((item) => item.tenantId === tenant.id || item.tenantName.toLowerCase() === tenant.name.toLowerCase()) : undefined;
+  if ((text.includes('add') || text.includes('record') || text.includes('update') || text.includes('mark') || text.includes('set')) && wantsPaymentUpdate) {
+    const bill = findRentBillForTenant(tenant, data);
+    const paymentAmount = amount || bill?.pendingAmount || tenant?.rent || 0;
     return {
       kind: 'record_payment',
       title: 'Record rent payment',
       tenantName: tenant?.name ?? 'Tenant not found',
-      amount,
+      amount: paymentAmount,
       billId: bill?.id,
       paymentMode: text.includes('cash') ? 'Cash' : text.includes('bank') ? 'Bank Transfer' : 'UPI',
-      summary: tenant && amount ? `Record ${money(amount)} payment from ${tenant.name}.` : 'I need tenant name and amount before recording payment.',
-      disabledReason: !tenant ? 'Tenant not found. Try: Add ₹8500 payment from Rahul.' : !amount ? 'Payment amount missing.' : !bill ? 'No rent bill found for this tenant. Generate monthly rent first.' : undefined,
+      summary: tenant && paymentAmount ? `Record ${money(paymentAmount)} payment from ${tenant.name}.` : 'I need tenant name and amount before recording payment.',
+      disabledReason: !tenant ? 'Tenant not found. Try: Update John N rent 8000 as paid.' : !paymentAmount ? 'Payment amount missing.' : !bill ? 'No rent bill found for this tenant. Generate monthly rent first.' : bill.status === 'Paid' ? 'This rent bill is already marked paid.' : undefined,
     };
   }
 
@@ -2528,6 +2562,40 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
         { label: 'Vacant', value: String(vacantBeds.length), tone: vacantBeds.length ? 'orange' : 'green' },
       ],
       actions: ["Today's work", 'Who has not paid rent?', 'Which beds are vacant?'],
+      source: 'local',
+    };
+  }
+
+  if (intent === 'room_lookup') {
+    const roomToken = findRoomTokenFromQuestion(question);
+    const tenant = findTenantByRoomQuestion(question, data);
+    const vacantBed = getVacantBeds(data).find((item) =>
+      roomToken ? `${item.room}-${item.bed}`.replace(/\s+/g, '').toLowerCase().includes(roomToken.toLowerCase()) || item.bed.replace(/\s+/g, '').toLowerCase().includes(roomToken.toLowerCase()) : false
+    );
+    return {
+      type: intent,
+      title: roomToken ? `Room ${roomToken}` : 'Room lookup',
+      answer: tenant
+        ? `${tenant.name} is currently assigned to ${tenant.room}.`
+        : vacantBed
+          ? `${vacantBed.bed} is currently vacant.`
+          : roomToken
+            ? `I could not find an active tenant in ${roomToken}.`
+            : 'Please include the room or bed number, for example: Who is in room 301-A?',
+      insight: tenant ? `${tenant.name}'s rent status is ${tenant.status}.` : 'Vacant rooms can be filled from the tenant admission flow.',
+      bullets: tenant
+        ? [`Mobile: ${tenant.mobile}`, `Company / College: ${tenant.companyCollege || 'Not added'}`, `Rent: ${money(tenant.rent)}`]
+        : vacantBed
+          ? [`Bed: ${vacantBed.bed}`, `Room: ${vacantBed.room}`, `Floor: ${vacantBed.floor}`]
+          : ['Try a full bed number like 301-A or room number like 301.'],
+      metrics: tenant
+        ? [
+            { label: 'Tenant', value: tenant.name, tone: 'blue' },
+            { label: 'Rent', value: money(tenant.rent), tone: 'green' },
+            { label: 'Status', value: tenant.status, tone: tenant.status === 'Paid' ? 'green' : 'red' },
+          ]
+        : [{ label: 'Room', value: roomToken ?? 'Missing', tone: vacantBed ? 'orange' : 'red' }],
+      actions: tenant ? ['Open Tenants tab', 'Check rent status'] : ['Add tenant', 'Which beds are vacant?'],
       source: 'local',
     };
   }
@@ -2720,8 +2788,11 @@ async function askAiCopilot(question: string, data: PgMasterData): Promise<AiAns
     if (!result.error && result.data?.answer) {
       return {
         ...localAnswer,
+        title: localAnswer.type === 'general' ? 'PGCopilot answer' : localAnswer.title,
         answer: String(result.data.answer),
         bullets: Array.isArray(result.data.bullets) ? result.data.bullets.map(String) : localAnswer.bullets,
+        insight: localAnswer.type === 'general' ? undefined : localAnswer.insight,
+        actions: localAnswer.type === 'general' ? [] : localAnswer.actions,
         source: 'gemini',
       };
     }
@@ -2803,6 +2874,7 @@ function AICopilot({
   const [commandMessage, setCommandMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
+  const [promptMenuOpen, setPromptMenuOpen] = useState(false);
 
   const filteredSuggestions = question.trim()
     ? suggestions
@@ -2840,6 +2912,7 @@ function AICopilot({
     const trimmed = value.trim();
     if (!trimmed) return;
     Keyboard.dismiss();
+    setPromptMenuOpen(false);
     setQuestion('');
     setCommandMessage(undefined);
     const userMessage: AiChatMessage = { id: newAiMessageId(), role: 'owner', text: trimmed, createdAt: new Date() };
@@ -2972,9 +3045,11 @@ function AICopilot({
           ))}
         </View>
       ) : null}
-      <View style={styles.aiInsightRecommendationRow}>
-        <View style={styles.aiInsightBox}><AppIcon name="lightbulb-on-outline" size={18} color={colors.orange} /><Text style={styles.aiInsightBoxText}>{itemAnswer.insight ?? health.recommendation}</Text></View>
-      </View>
+      {itemAnswer.insight ? (
+        <View style={styles.aiInsightRecommendationRow}>
+          <View style={styles.aiInsightBox}><AppIcon name="lightbulb-on-outline" size={18} color={colors.orange} /><Text style={styles.aiInsightBoxText}>{itemAnswer.insight}</Text></View>
+        </View>
+      ) : null}
     </View>
   );
 
@@ -3025,20 +3100,6 @@ function AICopilot({
           ))}
         </ScrollView>
 
-        <View style={styles.aiPriorityHeader}>
-          <Text style={styles.sectionTitle}>Today's Priorities</Text>
-          <TouchableOpacity onPress={() => submitQuestion("Today's work")}><Text style={styles.sectionAction}>View all tasks</Text></TouchableOpacity>
-        </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiPriorityScroller}>
-          {priorityCards.map((item) => (
-            <TouchableOpacity key={item.label} style={styles.aiPriorityCard} onPress={() => submitQuestion(item.label)}>
-              <View style={[styles.aiSummaryIcon, { backgroundColor: toneBackground(item.tone) }]}>
-                <AppIcon name={item.icon} size={16} color={colors[item.tone]} />
-              </View>
-              <Text style={styles.aiPriorityText}>{item.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
       </View>
 
       <View style={styles.aiChatHistory}>
@@ -3090,19 +3151,24 @@ function AICopilot({
       </ScrollView>
 
       <View style={styles.aiStickyComposer}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.aiSuggestionScrollerContent}>
-          {filteredSuggestions.map((item) => (
-            <TouchableOpacity key={item} style={styles.aiPromptCard} onPress={() => submitQuestion(item)}>
-              <View style={[styles.aiPromptIcon, { backgroundColor: colors.paleGreen }]}>
-                <AppIcon name={item.toLowerCase().includes('bed') ? 'bed-empty' : item.toLowerCase().includes('profit') ? 'chart-bar' : item.toLowerCase().includes('hello') || item.toLowerCase().includes('morning') ? 'hand-wave-outline' : 'cash-multiple'} size={15} color={colors.green} />
-              </View>
-              <Text style={styles.aiPromptText}>{item}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+        {promptMenuOpen ? (
+          <View style={styles.aiPromptMenu}>
+            {filteredSuggestions.map((item) => (
+              <TouchableOpacity key={item} style={styles.aiPromptMenuItem} onPress={() => submitQuestion(item)}>
+                <View style={[styles.aiPromptIcon, { backgroundColor: colors.paleGreen }]}>
+                  <AppIcon name={item.toLowerCase().includes('bed') ? 'bed-empty' : item.toLowerCase().includes('profit') ? 'chart-bar' : item.toLowerCase().includes('hello') || item.toLowerCase().includes('morning') ? 'hand-wave-outline' : 'cash-multiple'} size={15} color={colors.green} />
+                </View>
+                <Text style={styles.aiPromptMenuText}>{item}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        ) : null}
         <View style={styles.aiInputRowLarge}>
           <TouchableOpacity style={[styles.aiInlineVoiceButton, voiceActive && styles.aiInlineVoiceButtonActive]} onPress={startVoiceInput}>
             <AppIcon name={voiceActive ? 'microphone' : 'microphone-outline'} size={20} color={voiceActive ? '#FFF' : colors.green} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.aiPromptToggleButton} onPress={() => setPromptMenuOpen((open) => !open)}>
+            <AppIcon name={promptMenuOpen ? 'chevron-up' : 'chevron-down'} size={21} color={colors.green} />
           </TouchableOpacity>
           <TextInput
             style={styles.aiInput}
@@ -3858,7 +3924,7 @@ const styles = StyleSheet.create({
   aiScreen: { flex: 1, backgroundColor: colors.bg },
   aiTopBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 11, backgroundColor: colors.bg, borderBottomWidth: 1, borderBottomColor: 'rgba(232,236,232,0.75)', zIndex: 5 },
   aiBody: { flex: 1 },
-  aiBodyContent: { padding: 14, paddingBottom: 164 },
+  aiBodyContent: { padding: 14, paddingBottom: 122 },
   aiBrandIcon: { width: 48, height: 48, borderRadius: 16, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
   aiTopTitle: { color: colors.ink, fontSize: 22, fontWeight: '900', letterSpacing: -0.6 },
   aiTopSubtitle: { color: colors.muted, fontSize: 12, marginTop: 2 },
@@ -3867,7 +3933,7 @@ const styles = StyleSheet.create({
   aiBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '900' },
   aiOwnerAvatar: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.paleBlue, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.line },
   aiOwnerInitial: { color: colors.blue, fontWeight: '900', fontSize: 17 },
-  aiOverviewCard: { backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.line, padding: 12, marginBottom: 14, overflow: 'hidden' },
+  aiOverviewCard: { backgroundColor: colors.card, borderRadius: 18, borderWidth: 1, borderColor: colors.line, padding: 11, marginBottom: 14, overflow: 'hidden' },
   aiOverviewHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 14 },
   aiGreeting: { color: colors.ink, fontSize: 20, fontWeight: '900', letterSpacing: -0.5 },
   aiOverviewText: { color: colors.muted, fontSize: 13, marginTop: 5 },
@@ -3879,10 +3945,10 @@ const styles = StyleSheet.create({
   aiHealthStatus: { fontSize: 11, fontWeight: '800', marginTop: 2 },
   aiSummaryScroller: { gap: 9, paddingBottom: 4 },
   aiSummaryTileWide: { width: 126, minHeight: 118, borderRadius: 15, backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, padding: 12 },
-  aiSummaryTileCompact: { width: 96, minHeight: 92, borderRadius: 13, backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, padding: 9 },
-  aiSummaryIcon: { width: 31, height: 31, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginBottom: 9 },
-  aiSummaryLabelTop: { color: colors.ink, fontSize: 10.5, fontWeight: '800', minHeight: 24 },
-  aiSummaryValueLarge: { color: colors.ink, fontSize: 19, fontWeight: '900', marginTop: 5 },
+  aiSummaryTileCompact: { width: 90, minHeight: 82, borderRadius: 13, backgroundColor: '#FFF', borderWidth: 1, borderColor: colors.line, padding: 8 },
+  aiSummaryIcon: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginBottom: 6 },
+  aiSummaryLabelTop: { color: colors.ink, fontSize: 10, fontWeight: '800', minHeight: 20 },
+  aiSummaryValueLarge: { color: colors.ink, fontSize: 18, fontWeight: '900', marginTop: 3 },
   aiSummaryLabel: { color: colors.muted, fontSize: 9.5, fontWeight: '700', marginTop: 2 },
   aiPriorityHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, marginBottom: 10 },
   aiPriorityScroller: { gap: 9, paddingBottom: 2 },
@@ -3899,9 +3965,13 @@ const styles = StyleSheet.create({
   aiInputRowLarge: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 51, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingLeft: 10, marginBottom: 0 },
   aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, outlineStyle: 'none' } as any,
   aiSendButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
-  aiStickyComposer: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFFF2', borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 12, paddingTop: 9, paddingBottom: Platform.OS === 'ios' ? 16 : 10 },
+  aiStickyComposer: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFFF2', borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 10, paddingTop: 8, paddingBottom: Platform.OS === 'ios' ? 12 : 8 },
   aiInlineVoiceButton: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.paleGreen, alignItems: 'center', justifyContent: 'center' },
   aiInlineVoiceButtonActive: { backgroundColor: colors.green },
+  aiPromptToggleButton: { width: 34, height: 38, borderRadius: 11, backgroundColor: '#F3FAF7', alignItems: 'center', justifyContent: 'center' },
+  aiPromptMenu: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 8, marginBottom: 8, gap: 5, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -2 } },
+  aiPromptMenuItem: { minHeight: 42, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, backgroundColor: '#FBFCFA' },
+  aiPromptMenuText: { flex: 1, color: colors.ink, fontSize: 12, fontWeight: '800' },
   aiSuggestionScrollerContent: { gap: 9 },
   aiPromptCard: { width: 118, minHeight: 50, borderRadius: 14, borderWidth: 1, borderColor: colors.line, backgroundColor: '#FFF', padding: 8, flexDirection: 'row', alignItems: 'center', gap: 7 },
   aiPromptIcon: { width: 28, height: 28, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
