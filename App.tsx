@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
+import {
   Image,
   InputAccessoryView,
   Keyboard,
@@ -2985,6 +2989,7 @@ function AICopilot({
   const [loading, setLoading] = useState(false);
   const [typingMessageId, setTypingMessageId] = useState<string | undefined>();
   const [voiceActive, setVoiceActive] = useState(false);
+  const [keyboardInset, setKeyboardInset] = useState(0);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
 
   const promptSearch = question.trim().toLowerCase();
@@ -2995,6 +3000,17 @@ function AICopilot({
     : suggestions;
 
   const historyStorageKey = `pgcopilot-ai-history-${data.hostelId ?? 'demo'}`;
+
+  useSpeechRecognitionEvent('start', () => setVoiceActive(true));
+  useSpeechRecognitionEvent('end', () => setVoiceActive(false));
+  useSpeechRecognitionEvent('result', (event) => {
+    const transcript = event.results?.[0]?.transcript?.trim();
+    if (transcript) setQuestion(transcript);
+  });
+  useSpeechRecognitionEvent('error', (event) => {
+    setVoiceActive(false);
+    setCommandMessage(event.message || 'Voice input was not available. Please type your question.');
+  });
 
   useEffect(() => {
     let active = true;
@@ -3089,32 +3105,41 @@ function AICopilot({
     setTypingMessageId(undefined);
   };
 
-  const startVoiceInput = () => {
-    Keyboard.dismiss();
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', (event) => setKeyboardInset(event.endCoordinates.height));
+    const hideSubscription = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardInset(0));
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
+  const startVoiceInput = async () => {
     setCommandMessage(undefined);
-    setVoiceActive(true);
-    const SpeechRecognition = (globalThis as any).SpeechRecognition || (globalThis as any).webkitSpeechRecognition;
-    if (Platform.OS === 'web' && SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.lang = 'en-IN';
-      recognition.interimResults = false;
-      recognition.maxAlternatives = 1;
-      recognition.onresult = (event: any) => {
-        const transcript = event?.results?.[0]?.[0]?.transcript;
-        if (transcript) setQuestion(transcript);
-      };
-      recognition.onerror = () => {
-        setCommandMessage('Voice input was not available. Please type your question.');
-        setVoiceActive(false);
-      };
-      recognition.onend = () => setVoiceActive(false);
-      recognition.start();
+    setPromptMenuOpen(false);
+    if (voiceActive) {
+      ExpoSpeechRecognitionModule.stop();
       return;
     }
-    setCommandMessage('Voice input is ready for web browsers that support speech recognition. Native iOS/Android voice needs the next Expo speech package step.');
-    setTimeout(() => setVoiceActive(false), 700);
+    try {
+      const permission = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!permission.granted) {
+        setCommandMessage('Microphone and speech recognition permission are required for voice input.');
+        return;
+      }
+      Keyboard.dismiss();
+      setVoiceActive(true);
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-IN',
+        interimResults: true,
+        continuous: false,
+        maxAlternatives: 1,
+      });
+    } catch (error) {
+      setVoiceActive(false);
+      setCommandMessage(error instanceof Error ? error.message : 'Voice input was not available. Please type your question.');
+    }
   };
-
   const submitQuestion = async (value = question) => {
     const trimmed = value.trim();
     if (!trimmed) return;
@@ -3280,7 +3305,11 @@ function AICopilot({
   };
 
   return (
-    <View style={styles.aiScreen}>
+    <KeyboardAvoidingView
+      style={styles.aiScreen}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={0}
+    >
       <View style={styles.aiTopBar}>
         <View style={styles.aiBrandIcon}><AppIcon name="robot-outline" size={28} color="#FFF" /></View>
         <View style={styles.flex}>
@@ -3390,7 +3419,7 @@ function AICopilot({
       </View>
       </ScrollView>
 
-      <View style={styles.aiStickyComposer}>
+      <View style={[styles.aiStickyComposer, keyboardInset ? { bottom: keyboardInset } : null]}>
         {promptMenuOpen ? (
           <View style={styles.aiPromptMenu}>
             <ScrollView style={styles.aiPromptMenuScroll} showsVerticalScrollIndicator keyboardShouldPersistTaps="handled">
@@ -3408,8 +3437,8 @@ function AICopilot({
           </View>
         ) : null}
         <View style={styles.aiInputRowLarge}>
-          <TouchableOpacity style={[styles.aiInlineVoiceButton, voiceActive && styles.aiInlineVoiceButtonActive]} onPress={startVoiceInput}>
-            <AppIcon name={voiceActive ? 'microphone' : 'microphone-outline'} size={20} color={voiceActive ? '#FFF' : colors.green} />
+          <TouchableOpacity style={[styles.aiInlineVoiceButton, voiceActive && styles.aiInlineVoiceButtonActive]} onPress={startVoiceInput} disabled={loading}>
+            <AppIcon name={voiceActive ? 'microphone-off' : 'microphone-outline'} size={20} color={voiceActive ? '#FFF' : colors.green} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.aiPromptToggleButton} onPress={() => setPromptMenuOpen((open) => !open)}>
             <AppIcon name={promptMenuOpen ? 'chevron-up' : 'chevron-down'} size={21} color={colors.green} />
@@ -3427,7 +3456,7 @@ function AICopilot({
           </TouchableOpacity>
         </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -4178,7 +4207,7 @@ const styles = StyleSheet.create({
   aiScreen: { flex: 1, backgroundColor: colors.bg },
   aiTopBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 11, backgroundColor: colors.bg, borderBottomWidth: 1, borderBottomColor: 'rgba(232,236,232,0.75)', zIndex: 5 },
   aiBody: { flex: 1 },
-  aiBodyContent: { padding: 14, paddingBottom: 122 },
+  aiBodyContent: { padding: 14, paddingBottom: 158 },
   aiBrandIcon: { width: 48, height: 48, borderRadius: 16, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
   aiTopTitle: { color: colors.ink, fontSize: 22, fontWeight: '900', letterSpacing: -0.6 },
   aiTopSubtitle: { color: colors.muted, fontSize: 12, marginTop: 2 },
@@ -4217,9 +4246,9 @@ const styles = StyleSheet.create({
   aiAskTitle: { color: colors.ink, fontSize: 18, fontWeight: '900' },
   aiVoiceButton: { width: 48, height: 48, borderRadius: 24, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
   aiInputRowLarge: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 51, borderWidth: 1, borderColor: colors.line, borderRadius: 14, paddingLeft: 10, marginBottom: 0 },
-  aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, outlineStyle: 'none' } as any,
+  aiInput: { flex: 1, color: colors.ink, fontSize: 13, minHeight: 42, paddingVertical: 8, outlineStyle: 'none' } as any,
   aiSendButton: { width: 42, height: 42, borderRadius: 13, backgroundColor: colors.green, alignItems: 'center', justifyContent: 'center' },
-  aiStickyComposer: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFFF2', borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 10, paddingTop: 8, paddingBottom: Platform.OS === 'ios' ? 12 : 8 },
+  aiStickyComposer: { position: 'absolute', left: 0, right: 0, bottom: Platform.OS === 'web' ? 0 : 68, backgroundColor: '#FFFFFFF2', borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 10, paddingTop: 8, paddingBottom: Platform.OS === 'ios' ? 12 : 8 },
   aiInlineVoiceButton: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.paleGreen, alignItems: 'center', justifyContent: 'center' },
   aiInlineVoiceButtonActive: { backgroundColor: colors.green },
   aiPromptToggleButton: { width: 34, height: 38, borderRadius: 11, backgroundColor: '#F3FAF7', alignItems: 'center', justifyContent: 'center' },
@@ -4315,3 +4344,4 @@ const styles = StyleSheet.create({
   logoutButton: { height: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.card, marginBottom: 20 },
   logoutText: { color: colors.red, fontSize: 13, fontWeight: '800' },
 });
+

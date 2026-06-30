@@ -15,21 +15,26 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pgcopilot.app",
-      "buildNumber": "4",
+      "buildNumber": "5",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSMicrophoneUsageDescription": "PGCopilot uses the microphone so you can dictate AI prompts.",
+        "NSSpeechRecognitionUsageDescription": "PGCopilot uses speech recognition to convert your voice into AI prompts."
       }
     },
     "android": {
       "package": "com.pgcopilot.app",
-      "versionCode": 4,
+      "versionCode": 5,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon-large.png"
@@ -43,6 +48,16 @@
             "targetSdkVersion": 35,
             "buildToolsVersion": "35.0.0"
           }
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow PGCopilot to use the microphone for AI voice prompts.",
+          "speechRecognitionPermission": "Allow PGCopilot to convert your voice into AI prompts.",
+          "androidSpeechServicePackages": [
+            "com.google.android.googlequicksearchbox"
+          ]
         }
       ]
     ],
