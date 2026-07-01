@@ -26,7 +26,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import * as Speech from 'expo-speech';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { Session } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
@@ -62,6 +61,8 @@ import {
   type UpdateTenantInput,
   type VacateTenantInput,
 } from './src/lib/pgcopilotData';
+
+declare const require: any;
 
 type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
 type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'AI' | 'More';
@@ -152,6 +153,60 @@ function buildSpeakableAnswer(answer: AiAnswer) {
     .join('. ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+type SpeechCallbacks = {
+  onDone: () => void;
+  onStopped: () => void;
+  onError: () => void;
+};
+
+type ExpoSpeechModule = {
+  speak: (text: string, options: Record<string, unknown>) => void;
+  stop: () => void;
+};
+
+function getExpoSpeechModule() {
+  try {
+    return require('expo-speech') as ExpoSpeechModule;
+  } catch {
+    return undefined;
+  }
+}
+
+function stopResponseSpeech() {
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    return;
+  }
+  getExpoSpeechModule()?.stop();
+}
+
+function speakResponseText(text: string, language: VoiceLanguageCode, callbacks: SpeechCallbacks) {
+  if (Platform.OS === 'web' && typeof window !== 'undefined' && window.speechSynthesis && typeof window.SpeechSynthesisUtterance !== 'undefined') {
+    window.speechSynthesis.cancel();
+    const utterance = new window.SpeechSynthesisUtterance(text);
+    utterance.lang = language;
+    utterance.pitch = 1;
+    utterance.rate = 0.9;
+    utterance.onend = callbacks.onDone;
+    utterance.onerror = callbacks.onError;
+    window.speechSynthesis.speak(utterance);
+    return true;
+  }
+
+  const speechModule = getExpoSpeechModule();
+  if (!speechModule) return false;
+  speechModule.stop();
+  speechModule.speak(text, {
+    language,
+    pitch: 1,
+    rate: Platform.OS === 'ios' ? 0.48 : 0.9,
+    onDone: callbacks.onDone,
+    onStopped: callbacks.onStopped,
+    onError: callbacks.onError,
+  });
+  return true;
 }
 
 const colors = {
@@ -3121,7 +3176,7 @@ function AICopilot({
   }, [history, historyLoaded, historyStorageKey, typingMessageId]);
 
   useEffect(() => () => {
-    Speech.stop();
+    stopResponseSpeech();
   }, []);
 
   const openAnswerDetails = (itemAnswer: AiAnswer) => {
@@ -3314,16 +3369,13 @@ function AICopilot({
     if (!speechText) return;
     const speechId = messageId ?? `${itemAnswer.title}-${itemAnswer.answer}`;
     if (speakingMessageId === speechId) {
-      Speech.stop();
+      stopResponseSpeech();
       setSpeakingMessageId(undefined);
       return;
     }
-    Speech.stop();
+    stopResponseSpeech();
     setSpeakingMessageId(speechId);
-    Speech.speak(speechText, {
-      language: detectSpeechLanguage(speechText),
-      pitch: 1,
-      rate: Platform.OS === 'ios' ? 0.48 : 0.9,
+    const didStart = speakResponseText(speechText, detectSpeechLanguage(speechText), {
       onDone: () => setSpeakingMessageId(undefined),
       onStopped: () => setSpeakingMessageId(undefined),
       onError: () => {
@@ -3331,6 +3383,10 @@ function AICopilot({
         setCommandMessage('Unable to play this response as voice on this device.');
       },
     });
+    if (!didStart) {
+      setSpeakingMessageId(undefined);
+      setCommandMessage('Voice playback is not available in this build. Please rebuild the mobile app with the latest code.');
+    }
   };
 
   const renderAnswerCard = (itemAnswer: AiAnswer, messageId?: string) => {
