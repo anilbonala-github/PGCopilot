@@ -10,6 +10,8 @@ const corsHeaders = {
 type AskAiRequest = {
   hostelId?: string;
   question?: string;
+  language?: string;
+  locale?: string;
 };
 
 function jsonResponse(body: unknown, status = 200) {
@@ -71,6 +73,8 @@ Deno.serve(async (req) => {
   const payload = await req.json().catch(() => ({})) as AskAiRequest;
   const hostelId = payload.hostelId;
   const question = payload.question?.trim();
+  const language = payload.language?.trim() || 'English';
+  const locale = payload.locale?.trim() || 'en-IN';
   if (!hostelId || !question) return jsonResponse({ error: 'hostelId and question are required.' }, 400);
 
   const { data: membership, error: membershipError } = await supabase
@@ -151,6 +155,9 @@ Answer only using the JSON data below.
 Do not expose Aadhaar, documents, passwords, API keys, or data from another hostel.
 Do not modify or delete data.
 Keep the answer short, practical, and owner-friendly.
+The user may ask in English, Telugu, Hindi, or a mix. User selected voice/input language: ${language} (${locale}).
+First understand or translate the user's question into English internally, then answer in English.
+If the user asks a write/update command in Telugu/Hindi, explain the exact action clearly and ask for confirmation when needed.
 
 Question: ${question}
 Filtered hostel data:

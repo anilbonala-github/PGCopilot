@@ -66,6 +66,7 @@ type IconName = keyof typeof MaterialCommunityIcons.glyphMap;
 type Tab = 'Home' | 'Rooms' | 'Tenants' | 'Rent' | 'AI' | 'More';
 type Tone = 'green' | 'orange' | 'red' | 'blue' | 'ink' | 'purple';
 type AiIntent = 'greeting' | 'room_lookup' | 'pending_rent' | 'vacant_beds' | 'vacating_next_month' | 'profit' | 'profit_decrease' | 'new_admissions' | 'expense_analysis' | 'documents' | 'daily_ops' | 'reports' | 'command' | 'general';
+type VoiceLanguageCode = 'en-IN' | 'te-IN' | 'hi-IN';
 
 type AiAnswer = {
   type: AiIntent;
@@ -129,6 +130,12 @@ type AiCommand =
       summary: string;
       disabledReason?: string;
     };
+
+const voiceLanguageOptions: { code: VoiceLanguageCode; shortLabel: string; label: string; aiLabel: string }[] = [
+  { code: 'en-IN', shortLabel: 'EN', label: 'English', aiLabel: 'English' },
+  { code: 'te-IN', shortLabel: 'TE', label: 'Telugu', aiLabel: 'Telugu' },
+  { code: 'hi-IN', shortLabel: 'HI', label: 'Hindi', aiLabel: 'Hindi' },
+];
 
 const colors = {
   bg: '#F6F6F1',
@@ -2879,13 +2886,18 @@ function buildLocalAiAnswer(question: string, data: PgMasterData): AiAnswer {
   };
 }
 
-async function askAiCopilot(question: string, data: PgMasterData): Promise<AiAnswer> {
+async function askAiCopilot(question: string, data: PgMasterData, voiceLanguage = voiceLanguageOptions[0]): Promise<AiAnswer> {
   const localAnswer = buildLocalAiAnswer(question, data);
   if (!isSupabaseConfigured || !supabase || !data.hostelId) return localAnswer;
 
   try {
     const result = await supabase.functions.invoke('ask-ai', {
-      body: { hostelId: data.hostelId, question },
+      body: {
+        hostelId: data.hostelId,
+        question,
+        language: voiceLanguage.aiLabel,
+        locale: voiceLanguage.code,
+      },
     });
     if (!result.error && result.data?.answer) {
       return {
@@ -2990,6 +3002,7 @@ function AICopilot({
   const [typingMessageId, setTypingMessageId] = useState<string | undefined>();
   const [voiceActive, setVoiceActive] = useState(false);
   const [keyboardInset, setKeyboardInset] = useState(0);
+  const [voiceLanguage, setVoiceLanguage] = useState(voiceLanguageOptions[0]);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
 
   const promptSearch = question.trim().toLowerCase();
@@ -3130,7 +3143,7 @@ function AICopilot({
       Keyboard.dismiss();
       setVoiceActive(true);
       ExpoSpeechRecognitionModule.start({
-        lang: 'en-IN',
+        lang: voiceLanguage.code,
         interimResults: true,
         continuous: false,
         maxAlternatives: 1,
@@ -3140,6 +3153,15 @@ function AICopilot({
       setCommandMessage(error instanceof Error ? error.message : 'Voice input was not available. Please type your question.');
     }
   };
+
+  const cycleVoiceLanguage = () => {
+    setVoiceLanguage((current) => {
+      const currentIndex = voiceLanguageOptions.findIndex((item) => item.code === current.code);
+      return voiceLanguageOptions[(currentIndex + 1) % voiceLanguageOptions.length];
+    });
+    setCommandMessage(undefined);
+  };
+
   const submitQuestion = async (value = question) => {
     const trimmed = value.trim();
     if (!trimmed) return;
@@ -3174,7 +3196,7 @@ function AICopilot({
       createdAt: new Date(),
     }]);
     try {
-      const nextAnswer = await askAiCopilot(trimmed, data);
+      const nextAnswer = await askAiCopilot(trimmed, data, voiceLanguage);
       setAnswer(nextAnswer);
       await streamAssistantAnswer(nextAnswer, assistantMessageId);
     } finally {
@@ -3440,12 +3462,15 @@ function AICopilot({
           <TouchableOpacity style={[styles.aiInlineVoiceButton, voiceActive && styles.aiInlineVoiceButtonActive]} onPress={startVoiceInput} disabled={loading}>
             <AppIcon name={voiceActive ? 'microphone-off' : 'microphone-outline'} size={20} color={voiceActive ? '#FFF' : colors.green} />
           </TouchableOpacity>
+          <TouchableOpacity style={styles.aiLanguageButton} onPress={cycleVoiceLanguage} disabled={voiceActive || loading}>
+            <Text style={styles.aiLanguageButtonText}>{voiceLanguage.shortLabel}</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.aiPromptToggleButton} onPress={() => setPromptMenuOpen((open) => !open)}>
             <AppIcon name={promptMenuOpen ? 'chevron-up' : 'chevron-down'} size={21} color={colors.green} />
           </TouchableOpacity>
           <TextInput
             style={styles.aiInput}
-            placeholder="Ask PGCopilot AI..."
+            placeholder={`Ask in ${voiceLanguage.label}...`}
             value={question}
             onChangeText={setQuestion}
             returnKeyType="send"
@@ -4251,6 +4276,8 @@ const styles = StyleSheet.create({
   aiStickyComposer: { position: 'absolute', left: 0, right: 0, bottom: Platform.OS === 'web' ? 0 : 68, backgroundColor: '#FFFFFFF2', borderTopWidth: 1, borderTopColor: colors.line, paddingHorizontal: 10, paddingTop: 8, paddingBottom: Platform.OS === 'ios' ? 12 : 8 },
   aiInlineVoiceButton: { width: 38, height: 38, borderRadius: 12, backgroundColor: colors.paleGreen, alignItems: 'center', justifyContent: 'center' },
   aiInlineVoiceButtonActive: { backgroundColor: colors.green },
+  aiLanguageButton: { width: 35, height: 38, borderRadius: 11, backgroundColor: '#FFF8EF', borderWidth: 1, borderColor: '#F3D5B5', alignItems: 'center', justifyContent: 'center' },
+  aiLanguageButtonText: { color: colors.orange, fontSize: 11, fontWeight: '900' },
   aiPromptToggleButton: { width: 34, height: 38, borderRadius: 11, backgroundColor: '#F3FAF7', alignItems: 'center', justifyContent: 'center' },
   aiPromptMenu: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 16, padding: 8, marginBottom: 8, gap: 5, shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 12, shadowOffset: { width: 0, height: -2 } },
   aiPromptMenuScroll: { maxHeight: 250 },
