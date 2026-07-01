@@ -2374,6 +2374,52 @@ function normalizeLookupText(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+const devanagariRomanMap: Record<string, string> = {
+  'अ': 'a', 'आ': 'aa', 'इ': 'i', 'ई': 'ee', 'उ': 'u', 'ऊ': 'oo', 'ए': 'e', 'ऐ': 'ai', 'ओ': 'o', 'औ': 'au',
+  'क': 'k', 'ख': 'kh', 'ग': 'g', 'घ': 'gh', 'च': 'ch', 'छ': 'chh', 'ज': 'j', 'झ': 'jh', 'ट': 't', 'ठ': 'th',
+  'ड': 'd', 'ढ': 'dh', 'त': 't', 'थ': 'th', 'द': 'd', 'ध': 'dh', 'न': 'n', 'प': 'p', 'फ': 'ph', 'ब': 'b',
+  'भ': 'bh', 'म': 'm', 'य': 'y', 'र': 'r', 'ल': 'l', 'व': 'v', 'श': 'sh', 'ष': 'sh', 'स': 's', 'ह': 'h',
+  'ा': 'a', 'ि': 'i', 'ी': 'i', 'ु': 'u', 'ू': 'u', 'े': 'e', 'ै': 'ai', 'ो': 'o', 'ौ': 'au', 'ं': 'n', 'ँ': 'n', '़': '', '्': '',
+};
+
+const teluguRomanMap: Record<string, string> = {
+  'అ': 'a', 'ఆ': 'aa', 'ఇ': 'i', 'ఈ': 'ee', 'ఉ': 'u', 'ఊ': 'oo', 'ఎ': 'e', 'ఏ': 'e', 'ఐ': 'ai', 'ఒ': 'o', 'ఓ': 'o', 'ఔ': 'au',
+  'క': 'k', 'ఖ': 'kh', 'గ': 'g', 'ఘ': 'gh', 'చ': 'ch', 'ఛ': 'chh', 'జ': 'j', 'ఝ': 'jh', 'ట': 't', 'ఠ': 'th', 'డ': 'd', 'ఢ': 'dh',
+  'త': 't', 'థ': 'th', 'ద': 'd', 'ధ': 'dh', 'న': 'n', 'ప': 'p', 'ఫ': 'ph', 'బ': 'b', 'భ': 'bh', 'మ': 'm', 'య': 'y', 'ర': 'r',
+  'ల': 'l', 'వ': 'v', 'శ': 'sh', 'ష': 'sh', 'స': 's', 'హ': 'h', 'ళ': 'l',
+  'ా': 'a', 'ి': 'i', 'ీ': 'i', 'ు': 'u', 'ూ': 'u', 'ె': 'e', 'ే': 'e', 'ై': 'ai', 'ొ': 'o', 'ో': 'o', 'ౌ': 'au', 'ం': 'n', 'ః': 'h', '్': '',
+};
+
+function romanizeIndicText(value: string) {
+  return Array.from(value).map((char) => devanagariRomanMap[char] ?? teluguRomanMap[char] ?? char).join('');
+}
+
+function normalizeQuestionForLookup(question: string) {
+  return normalizeLookupText(`${question} ${romanizeIndicText(question)}`);
+}
+
+function looseNameText(value: string) {
+  return normalizeLookupText(romanizeIndicText(value)).replace(/[aeiouh]/g, '');
+}
+
+function textHasAny(text: string, terms: string[]) {
+  return terms.some((term) => text.includes(term));
+}
+
+function isLikelyPaymentCommand(text: string) {
+  const writeTerms = [
+    'add', 'record', 'update', 'mark', 'set', 'save', 'paid',
+    'చేయ', 'చేస', 'అప్డేట్', 'జోడ', 'నమోద', 'పెట్టు', 'చెల్ల',
+    'कर', 'किया', 'करना', 'करो', 'जोड़', 'जोड़', 'दर्ज', 'अपडेट', 'जमा',
+  ];
+  const paymentTerms = [
+    'payment', 'rent paid', 'paid', 'mark paid', 'as paid', 'update rent', 'rent status', 'rent',
+    'రెంట్', 'కిరాయి', 'చెల్లింపు', 'చెల్లించ', 'పేమెంట్',
+    'किराया', 'रेंट', 'भुगतान', 'पेमेंट', 'पेड',
+  ];
+  return textHasAny(text, writeTerms) && textHasAny(text, paymentTerms);
+}
+
 function uniqueTenants(tenants: Tenant[]) {
   const seen = new Set<string>();
   return tenants.filter((tenant) => {
@@ -2389,7 +2435,8 @@ function describeTenantForClarification(tenant: Tenant) {
 }
 
 function findTenantMatchesFromQuestion(question: string, data: PgMasterData) {
-  const normalizedQuestion = normalizeLookupText(question);
+  const normalizedQuestion = normalizeQuestionForLookup(question);
+  const looseQuestion = looseNameText(question);
   const digitGroups = question.match(/\d{4,15}/g) ?? [];
   const roomToken = findRoomTokenFromQuestion(question);
   const activeTenants = data.tenants.filter((tenant) => tenant.admissionStatus !== 'Vacated');
@@ -2406,12 +2453,18 @@ function findTenantMatchesFromQuestion(question: string, data: PgMasterData) {
     if (roomMatches.length) return uniqueTenants(roomMatches);
   }
 
-  const fullNameMatches = activeTenants.filter((tenant) => normalizedQuestion.includes(normalizeLookupText(tenant.name)));
+  const fullNameMatches = activeTenants.filter((tenant) => {
+    const normalizedName = normalizeLookupText(tenant.name);
+    const looseName = looseNameText(tenant.name);
+    return normalizedQuestion.includes(normalizedName) || (looseName.length >= 2 && looseQuestion.includes(looseName));
+  });
   if (fullNameMatches.length) return uniqueTenants(fullNameMatches);
 
   const firstNameMatches = activeTenants.filter((tenant) => {
     const firstName = normalizeLookupText(tenant.name.split(/\s+/)[0] ?? '');
-    return firstName.length >= 3 && normalizedQuestion.includes(firstName);
+    const looseFirstName = looseNameText(tenant.name.split(/\s+/)[0] ?? '');
+    return (firstName.length >= 3 && normalizedQuestion.includes(firstName))
+      || (looseFirstName.length >= 2 && looseQuestion.includes(looseFirstName));
   });
   return uniqueTenants(firstNameMatches);
 }
@@ -2468,16 +2521,9 @@ function detectAiCommand(question: string, data: PgMasterData): AiCommand | unde
   const ambiguousTenantReason = tenantMatches.length > 1
     ? `I found multiple matching tenants: ${tenantMatches.map(describeTenantForClarification).join('; ')}. Please include full name, room/bed, or mobile number. Example: add Ramesh S rent 3000 or add rent 3000 for room 101-A.`
     : undefined;
-  const wantsPaymentUpdate = text.includes('payment')
-    || text.includes('rent paid')
-    || text.includes('paid')
-    || text.includes('mark paid')
-    || text.includes('as paid')
-    || text.includes('update rent')
-    || text.includes('rent status')
-    || /\brent\s+(of\s+)?\d/i.test(text);
+  const wantsPaymentUpdate = isLikelyPaymentCommand(text) || /\brent\s+(of\s+)?\d/i.test(text);
 
-  if ((text.includes('add') || text.includes('record') || text.includes('update') || text.includes('mark') || text.includes('set')) && wantsPaymentUpdate) {
+  if (wantsPaymentUpdate) {
     const bill = findRentBillForTenant(tenant, data);
     const paymentAmount = amount || bill?.pendingAmount || tenant?.rent || 0;
     return {
