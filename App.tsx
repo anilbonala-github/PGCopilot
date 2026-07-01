@@ -26,6 +26,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
+import * as Speech from 'expo-speech';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import type { Session } from '@supabase/supabase-js';
 import { isSupabaseConfigured, supabase } from './src/lib/supabase';
@@ -136,6 +137,22 @@ const voiceLanguageOptions: { code: VoiceLanguageCode; shortLabel: string; label
   { code: 'te-IN', shortLabel: 'TE', label: 'Telugu', aiLabel: 'Telugu' },
   { code: 'hi-IN', shortLabel: 'HI', label: 'Hindi', aiLabel: 'Hindi' },
 ];
+
+function detectSpeechLanguage(text: string): VoiceLanguageCode {
+  if (/[\u0C00-\u0C7F]/.test(text)) return 'te-IN';
+  if (/[\u0900-\u097F]/.test(text)) return 'hi-IN';
+  return 'en-IN';
+}
+
+function buildSpeakableAnswer(answer: AiAnswer) {
+  const metrics = answer.metrics?.map((item) => `${item.label}: ${item.value}`).join('. ');
+  const bullets = answer.bullets?.join('. ');
+  return [answer.title, answer.answer, metrics, bullets, answer.insight]
+    .filter(Boolean)
+    .join('. ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 const colors = {
   bg: '#F6F6F1',
@@ -3047,6 +3064,7 @@ function AICopilot({
   const [loading, setLoading] = useState(false);
   const [typingMessageId, setTypingMessageId] = useState<string | undefined>();
   const [voiceActive, setVoiceActive] = useState(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | undefined>();
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [voiceLanguage, setVoiceLanguage] = useState(voiceLanguageOptions[0]);
   const [promptMenuOpen, setPromptMenuOpen] = useState(false);
@@ -3101,6 +3119,10 @@ function AICopilot({
     if (!historyLoaded || typingMessageId) return;
     AsyncStorage.setItem(historyStorageKey, JSON.stringify(pruneAiHistory(history))).catch(() => undefined);
   }, [history, historyLoaded, historyStorageKey, typingMessageId]);
+
+  useEffect(() => () => {
+    Speech.stop();
+  }, []);
 
   const openAnswerDetails = (itemAnswer: AiAnswer) => {
     const type = itemAnswer.type;
@@ -3287,9 +3309,35 @@ function AICopilot({
     }
   };
 
+  const toggleSpeakAnswer = async (itemAnswer: AiAnswer, messageId?: string) => {
+    const speechText = buildSpeakableAnswer(itemAnswer);
+    if (!speechText) return;
+    const speechId = messageId ?? `${itemAnswer.title}-${itemAnswer.answer}`;
+    if (speakingMessageId === speechId) {
+      Speech.stop();
+      setSpeakingMessageId(undefined);
+      return;
+    }
+    Speech.stop();
+    setSpeakingMessageId(speechId);
+    Speech.speak(speechText, {
+      language: detectSpeechLanguage(speechText),
+      pitch: 1,
+      rate: Platform.OS === 'ios' ? 0.48 : 0.9,
+      onDone: () => setSpeakingMessageId(undefined),
+      onStopped: () => setSpeakingMessageId(undefined),
+      onError: () => {
+        setSpeakingMessageId(undefined);
+        setCommandMessage('Unable to play this response as voice on this device.');
+      },
+    });
+  };
+
   const renderAnswerCard = (itemAnswer: AiAnswer, messageId?: string) => {
     const isTyping = messageId === typingMessageId;
     const answerText = itemAnswer.answer ? `${itemAnswer.answer}${isTyping ? ' |' : ''}` : '';
+    const speechId = messageId ?? `${itemAnswer.title}-${itemAnswer.answer}`;
+    const isSpeaking = speakingMessageId === speechId;
     return (
     <View style={styles.aiAnswerCard}>
       <View style={styles.aiAnswerHeader}>
@@ -3297,9 +3345,20 @@ function AICopilot({
           <Text style={styles.cardEyebrow}>{itemAnswer.source === 'gemini' ? 'GEMINI ASSISTED' : 'PGCOPILOT AI'}</Text>
           <Text style={styles.aiAnswerTitle}>{itemAnswer.title}</Text>
         </View>
-        <TouchableOpacity style={styles.aiDetailsButton} onPress={() => openAnswerDetails(itemAnswer)}>
-          <Text style={styles.aiDetailsText}>View details</Text>
-        </TouchableOpacity>
+        <View style={styles.aiAnswerHeaderActions}>
+          {!isTyping ? (
+            <TouchableOpacity
+              style={[styles.aiListenButton, isSpeaking ? styles.aiListenButtonActive : null]}
+              onPress={() => toggleSpeakAnswer(itemAnswer, messageId)}
+              accessibilityLabel={isSpeaking ? 'Stop listening to response' : 'Listen to response'}
+            >
+              <AppIcon name={isSpeaking ? 'stop' : 'volume-high'} size={16} color={isSpeaking ? '#FFF' : colors.green} />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity style={styles.aiDetailsButton} onPress={() => openAnswerDetails(itemAnswer)}>
+            <Text style={styles.aiDetailsText}>View details</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       {answerText ? (
         <Text style={styles.aiAnswerText}>{answerText}</Text>
@@ -4349,6 +4408,9 @@ const styles = StyleSheet.create({
   aiAnswerCard: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.line, borderRadius: 18, padding: 13, marginBottom: 12, overflow: 'hidden' },
   aiAnswerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 12 },
   aiAnswerTitle: { color: colors.ink, fontSize: 20, fontWeight: '900', marginTop: 4 },
+  aiAnswerHeaderActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  aiListenButton: { width: 36, height: 36, borderRadius: 12, borderWidth: 1, borderColor: '#BFE6D8', backgroundColor: colors.paleGreen, alignItems: 'center', justifyContent: 'center' },
+  aiListenButtonActive: { backgroundColor: colors.green, borderColor: colors.green },
   aiDetailsButton: { borderWidth: 1, borderColor: '#BFE6D8', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8 },
   aiDetailsText: { color: colors.green, fontSize: 11, fontWeight: '900' },
   aiSectionLabel: { color: colors.green, fontSize: 10, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase', marginTop: 14, marginBottom: 6 },
