@@ -15,16 +15,18 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pgcopilot.app",
-      "buildNumber": "9",
+      "buildNumber": "11",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "PGCopilot uses the microphone so you can dictate AI prompts.",
-        "NSSpeechRecognitionUsageDescription": "PGCopilot uses speech recognition to convert your voice into AI prompts."
+        "NSSpeechRecognitionUsageDescription": "PGCopilot uses speech recognition to convert your voice into AI prompts.",
+        "NSPhotoLibraryUsageDescription": "PGCopilot lets you select tenant photos and document images from your photo library for tenant admission records.",
+        "NSPhotoLibraryAddUsageDescription": "PGCopilot may save generated receipts or exported documents to your photo library when you choose to share or download them."
       }
     },
     "android": {
       "package": "com.pgcopilot.app",
-      "versionCode": 9,
+      "versionCode": 11,
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
